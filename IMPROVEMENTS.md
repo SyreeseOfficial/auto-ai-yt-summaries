@@ -25,6 +25,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## A. Bugs and crash paths
 
+**Status: done (28 of 30), 2026-10-20.** Not done: #16 (needs a PRD decision) and #18 (overlaps #213: decide whether deleting a note allows re-saving). #3 is covered by a catch-all inside `main`, so the `process()` split stays in section B (#49).
+
 1. **[V][S]** **REPL dies on any unexpected error.** `repl()` calls `main()` bare (:327), so a `KeyError`, `OSError` (disk full), or bad JSON prints a traceback and ends the session. Wrap the call, print the error, log `failed`, return to the prompt. Reproduced by making `fetch` raise `KeyError`.
 2. **[V][S]** **Ctrl-C during a fetch kills the REPL.** Only `input()` is guarded (:318-321). Catch `KeyboardInterrupt` around the `main` call, print `cancelled`, stay at the prompt. Reproduced.
 3. **[S]** **One-shot runs have no catch-all either.** Put the same wrapper in the shared `process(url)` function (see E) so a hotkey run always ends in a log line and a toast.
@@ -174,12 +176,12 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## F. Transcript quality
 
-135. **[M][PRD]** **Add paragraph breaks.** The transcript is one line (:163), 2,089 chars for a 3-minute video, 100k+ for a long one. Break on `tStartMs` gaps over ~2 s. PRD allows "light cleanup"; a blank line fits.
+135. **[M][PRD]** **Add paragraph breaks.** The transcript is one line (:163), 2,089 chars for a 3-minute video, 100k+ for a long one. Break on `tStartMs` gaps over ~2 s. PRD allows "light cleanup"; a blank line fits. (MOVE TO SKIPPED SECTION)
 136. **[V][S]** **Strip `♪` and `[...]` tags.** The Rick Astley transcript starts `[♪♪♪] ♪ We're no strangers to love ♪ ♪ You know...`. `re.sub(r"\[[^\]]*\]|♪|>>", "", text)`. Check manual captions first; some use brackets meaningfully.
-137. **[V][S]** **Use `info["chapters"]` as paragraph breaks when present** (3 on a test video), else pause gaps. [PRD] if you also want headings.
-138. **[S]** **Cap paragraph length** (~600 chars) so a track with no pauses still gets breaks. Split at the next sentence end or space.
+137. **[V][S]** **Use `info["chapters"]` as paragraph breaks when present** (3 on a test video), else pause gaps. [PRD] if you also want headings. (MOVE TO SKIPPED SECTION)
+138. **[S]** **Cap paragraph length** (~600 chars) so a track with no pauses still gets breaks. Split at the next sentence end or space. (MOVE TO SKIPPED SECTION)
 139. **[S]** **Split on `>>`** (speaker change in manual captions) instead of deleting it.
-140. **[M]** **Detect repeated rolling lines in auto captions.** Check a real sample first; it may already be fine.
+140. **[M]** **Detect repeated rolling lines in auto captions.** Check a real sample first; it may already be fine. (MOVE TO SKIPPED SECTION)
 141. **[S]** **Decode HTML entities** (`&amp;`, `&#39;`) if any show up in real tracks. Check one first.
 142. **[S]** **NFC-normalize the transcript** (`unicodedata.normalize`) so Obsidian search matches. Cheap, low value.
 143. **[S]** **Prefer `en` over `en-US/GB`** within a key. Dict order decides today (:151). Pick `en` first explicitly.
@@ -187,7 +189,7 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 145. **[S]** **Say which languages exist:** `no English captions (found: fr, de)` instead of `NO_CAPS`. More honest.
 146. **[V][S]** **Return which dict a track came from** (`subtitles` vs `automatic_captions`) from `pick_track`. Manual and auto URLs look the same (both contain `caps=asr`), so you can't tell from the URL.
 147. **[S]** **Check for `[ __ ]` censor tags** in auto captions and strip them with the music tags.
-148. **[M][PRD]** **Optional timestamps** every N minutes (`[05:00]`). PRD says none in v1; only if you want them later.
+148. **[M][PRD]** **Optional timestamps** every N minutes (`[05:00]`). PRD says none in v1; only if you want them later. (MOVE TO SKIPPED SECTION)
 149. **[S]** **`en-orig`** (original-language auto track) matches `startswith("en-")` (:152). Add a test line so nobody breaks it.
 150. **[S]** **Empty text after cleanup** (all music tags) should give the no-captions stub, not an empty note. `transcript_text` returns `""`, which is falsy, so check the stub reason says so.
 151. **[S]** **Check non-English characters in the body** survive the write. The body path uses utf-8 and nothing strips them, but only the filename is tested.

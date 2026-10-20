@@ -109,7 +109,7 @@ def run_main(url, fetch=None, track=None, tmp=None):
 
     def fake_fetch(vid, cfg):
         calls["fetch"] += 1
-        if isinstance(fetch, Exception):
+        if isinstance(fetch, BaseException):
             raise fetch
         return fetch
 
@@ -168,6 +168,112 @@ def test_main_throttle_and_timeout():
         assert code == 2 and calls["fetch"] == tries, exc
         assert (d / "retry.txt").read_text() == f"https://www.youtube.com/watch?v={V}\n"
         assert "\tfailed\t" in (d / "run.log").read_text() and calls["notify"] and notes(d) == []
+
+
+def test_main_crash_paths():
+    for exc, out in ((KeyError("inbox"), "KeyError"), (KeyboardInterrupt(), "cancelled"),
+                     (ValueError("caption download was not valid JSON"), "valid JSON")):
+        code, calls, d = run_main(f"https://youtu.be/{V}", exc)
+        assert code == 1 and out in (d / "run.log").read_text(), exc
+        assert notes(d) == []
+    d = run_main(f"https://youtu.be/{V}", y.yt_dlp.utils.DownloadError("ERROR: [youtube] x: This video is unavailable"))
+    assert d[0] == 1 and notes(d[2]) == [] and "\tfailed\t" in (d[2] / "run.log").read_text()
+
+
+def test_throttle_messages():
+    from unittest import mock
+    msg = "ERROR: [youtube] x: This content isn't available, try again later. rate-limited by YouTube for up to an hour"
+    with mock.patch.object(y.yt_dlp, "YoutubeDL") as ydl:
+        ydl.return_value.__enter__.return_value.extract_info.side_effect = y.yt_dlp.utils.DownloadError(msg)
+        try:
+            fetch(V, {"timeout": 1})
+        except Throttled:
+            pass
+        else:
+            assert False, "rate-limited message must be a throttle"
+
+
+def test_retry_only_transient():
+    import urllib.error
+    for code, calls in ((403, 1), (404, 1), (503, 3)):
+        n = []
+
+        def fn():
+            n.append(1)
+            raise urllib.error.HTTPError("u", code, "x", {}, None)
+        try:
+            with_retries(fn, {"retries": 3})
+        except (urllib.error.HTTPError, Throttled):
+            pass
+        assert len(n) == calls, code
+
+
+def test_fetch_track_bad_json():
+    import io
+    from unittest import mock
+    with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(b"<html>nope</html>")):
+        assert raises(fetch_track, "u", {"timeout": 1})
+
+
+def test_misc_a():
+    assert not ID_RE.fullmatch("é" * 11) and raises(parse_url, "https://youtu.be/" + "é" * 11)
+    assert pick_track({"subtitles": {"en": [{"ext": "json3"}]}}) is None  # format without url
+    assert stub_reason({}, Exception("Boom Loud")).endswith("Boom Loud")  # case kept
+    assert "\\*" in render({"title": "a*b_c"}, V, "t") and "\\_" in render({"title": "a*b_c"}, V, "t")
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        with mock.patch.multiple(y, LOG=d / "run.log"):
+            log_run("u", "failed", "line1\n\tline2")
+        assert (d / "run.log").read_text().count("\n") == 1
+        # a note with front matter still dedupes; a stub is recognised
+        (d / "a.md").write_text(f"---\ntags: x\n---\n[T](https://www.youtube.com/watch?v={V})\n")
+        assert find_existing(d, V) == d / "a.md"
+        (d / "b.md").write_text(render({"title": "T"}, V, None, y.NO_CAPS))
+        assert is_stub(d / "b.md") and not is_stub(d / "a.md")
+        assert not is_stub(Path(d / "c.md").write_text("x") and d / "c.md")
+        # clash cap: 99 names then an error
+        for _ in range(99):
+            write_atomic(d / "I", "N", "x")
+        assert raises_os(write_atomic, d / "I", "N", "x")
+        # config errors are readable ValueErrors, not tracebacks
+        with mock.patch.object(y, "HERE", d):
+            assert "not found" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s"\n' % d)
+            assert "missing 'inbox'" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = "false"\n' % d)
+            assert "true or false" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s/nope"\ninbox = "I"\n' % d)
+            assert "not a folder" in err_of(load_config)
+            (d / "config.toml").write_text('vault = [oops\n')
+            assert "line 1" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\n' % d)
+            assert load_config()["notify"] is True
+
+
+def raises_os(f, *a):
+    try:
+        f(*a)
+    except OSError:
+        return True
+    return False
+
+
+def err_of(f):
+    try:
+        f()
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+def test_cli():
+    from unittest import mock
+    with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9):
+        assert cli([]) == 7 and cli(["-i"]) == 9 and cli(["-h"]) == 0 and cli(["--help"]) == 0
+        assert cli(["-i", "https://youtu.be/x"]) == 1 and cli(["--bogus"]) == 1
 
 
 if __name__ == "__main__":
