@@ -104,7 +104,7 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## C. Settings menu
 
-**Status: done (14 of 22), 2026-10-20.** Done: #70, #71, #72, #73, #74, #75, #78, #79, #86, #87, #88, #89, #90, #91. Tests #245-247 are in `test_settings` and `test_settings_apply_to_next_paste`. Not done: #76 and #77 (editable values; #77 overlaps #230, a PRD call), #80 (changes when toasts fire), #81-85 (toggles for features that do not exist yet, or that need a PRD decision). The `d` command (#78) removes the toggle lines, so they fall back to on.
+**Status: done (17 of 22), 2026-10-20.** Done: #70-75, #76 (`inbox` is editable), #77 (`timeout` and `retries` are editable and validated, so #230 no longer applies), #78, #79, #80 (`notify` is `auto` / `always` / `never`; old `true` / `false` still read as auto / never), #86, #87, #88, #89, #90, #91. Tests #245-247 are in `test_settings`, `test_toast_modes`, and `test_settings_apply_to_next_paste`. Not done: #81-85 (toggles for features that do not exist yet, or that need a PRD decision). `d` resets the settings that have defaults and keeps `inbox`; it rewrites lines already in the file and does not add new ones. Also validated in `load_config`: `timeout` and `retries` must be whole numbers, 1 or more (covers #221 and #132's `retries = 0` case).
 
 70. **[S]** **`set_toggle` writes the config non-atomically** (:56). A crash mid-write truncates `config.toml` and loses your vault path. Write a temp file, then `os.replace`.
 71. **[S]** **`set_toggle` reads and writes without `encoding`** (:54, :56). Use `encoding="utf-8"`.

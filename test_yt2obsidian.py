@@ -244,13 +244,19 @@ def test_misc_a():
             (d / "config.toml").write_text('vault = "%s"\n' % d)
             assert "missing 'inbox'" in err_of(load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = "false"\n' % d)
+            assert "notify must be auto, always, never" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = false\nopen_obsidian = "no"\n' % d)
             assert "true or false" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nretries = 0\n' % d)
+            assert "retries must be a whole number" in err_of(load_config)
+            (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = false\n' % d)
+            assert load_config()["notify"] == "never"  # the old on/off form still reads
             (d / "config.toml").write_text('vault = "%s/nope"\ninbox = "I"\n' % d)
             assert "not a folder" in err_of(load_config)
             (d / "config.toml").write_text('vault = [oops\n')
             assert "line 1" in err_of(load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\n' % d)
-            assert load_config()["notify"] is True
+            assert load_config()["notify"] == "auto"
 
 
 def raises_os(f, *a):
@@ -380,35 +386,56 @@ def test_settings():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         cfgfile = d / "config.toml"
-        cfgfile.write_text(f'vault = "{d}"  # mine\ninbox = "I"\nnotify = true  # keep\nnotfy = 1\n')
+        cfgfile.write_text(f'vault = "{d}"  # mine\ninbox = "I I"  # box\nnotify = "auto"  # keep\ntimeout = 30\nnotfy = 1\n')
+        text = lambda: cfgfile.read_text()
         with mock.patch.object(y, "HERE", d):
-            set_toggle("notify", False)  # rewrites in place, keeps the comment and other keys
-            assert "notify = false  # keep" in cfgfile.read_text()
-            assert '# mine' in cfgfile.read_text() and 'inbox = "I"' in cfgfile.read_text()
-            set_toggle("open_obsidian", False)  # absent key is appended, lowercase
-            assert cfgfile.read_text().endswith("open_obsidian = false\n")
+            set_value("notify", "never")  # rewritten in place, comment and other keys kept
+            assert 'notify = "never"  # keep' in text() and "# mine" in text()
+            set_value("inbox", "New Box")  # a quoted value with spaces is replaced whole
+            assert 'inbox = "New Box"  # box' in text()
+            set_value("open_obsidian", False)  # absent key is appended, lowercase
+            assert text().endswith("open_obsidian = false\n")
             assert not list(d.glob("*.tmp")) and unknown_keys(load_config()) == ["notfy"]
-            assert load_config()["notify"] is False
-            reset_toggles()
-            assert "notify" not in cfgfile.read_text() and "open_obsidian" not in cfgfile.read_text()
-            assert load_config()["notify"] is True and "inbox" in cfgfile.read_text()
-            # the menu: flip, invalid input, leave with q; reset with d
-            feed = iter(["1", "x", "9", "q"])
+            assert load_config()["notify"] == "never" and load_config()["inbox"] == "New Box"
+            reset_settings()  # defaults back; inbox and keys that were absent are left alone
+            c = load_config()
+            assert c["notify"] == "auto" and c["open_obsidian"] is True and c["inbox"] == "New Box"
+            assert 'notify = "auto"  # keep' in text() and "retries" not in text()
+            # input rules
+            assert parse_setting("timeout", " 45 ") == 45 and parse_setting("inbox", " Notes/Yt ") == "Notes/Yt"
+            for key, bad in (("timeout", "0"), ("retries", "x"), ("retries", "-1"), ("inbox", ""), ("inbox", "/tmp/x"), ("inbox", "../x")):
+                assert raises(parse_setting, key, bad)
+            # the menu: flip (1), cycle (2), type a value (3, 4), bad input, leave
+            feed = iter(["1", "2", "3", "Notes", "4", "0", "4", "", "x", "9", "q"])
             with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print") as pr:
                 settings_menu()
             shown = "\n".join(str(c.args[0]) for c in pr.call_args_list if c.args)
-            assert "Open the note in Obsidian after saving: off" in shown and shown.count("pick 1-2") == 2
-            assert "unknown keys ignored: notfy" in shown
-            assert "open_obsidian = false" in cfgfile.read_text()
+            assert "Open the note in Obsidian after saving: off" in shown
+            assert "Desktop notifications: always (even at the prompt)" in shown
+            assert "Inbox folder inside the vault: Notes" in shown and "Seconds to wait per fetch must be a whole number" in shown
+            assert shown.count("pick 1-5") == 2 and "unknown keys ignored: notfy" in shown
+            c = load_config()
+            assert (c["open_obsidian"], c["notify"], c["inbox"], c["timeout"]) == (False, "always", "Notes", 30)
             feed = iter(["d", ""])
             with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print"):
                 settings_menu()
-            assert "open_obsidian" not in cfgfile.read_text()
+            assert load_config()["notify"] == "auto" and load_config()["inbox"] == "Notes"
             # a broken config returns to the caller with a message, not a traceback
             cfgfile.write_text("vault = [oops\n")
             with mock.patch("builtins.print") as pr:
                 settings_menu()
             assert "Config problem" in str(pr.call_args)
+
+
+def test_toast_modes():
+    from unittest import mock
+    sent = []
+    for mode, repl, term, want in (("auto", False, False, 1), ("auto", False, True, 0), ("auto", True, False, 0),
+                                   ("always", True, True, 1), ("never", False, False, 0)):
+        sent.clear()
+        with mock.patch.object(y, "notify", sent.append), mock.patch.object(y, "at_terminal", return_value=term):
+            y.toast({"notify": mode}, "m", repl)
+        assert len(sent) == want, (mode, repl, term)
 
 
 def test_settings_apply_to_next_paste():

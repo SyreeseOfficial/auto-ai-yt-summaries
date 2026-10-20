@@ -24,9 +24,12 @@ LOG = HERE / "run.log"
 RETRY = HERE / "retry.txt"
 HISTORY = HERE / ".history"
 RETRY_DELAY = 2  # seconds, times attempt number
-TOGGLES = {  # config key -> menu label, all default on
-    "open_obsidian": "Open the note in Obsidian after saving",
-    "notify": "Desktop notifications",
+SETTINGS = {  # config key -> (menu label, default, allowed): bool, a {choice: note} dict, int, or str
+    "open_obsidian": ("Open the note in Obsidian after saving", True, bool),
+    "notify": ("Desktop notifications", "auto", {"auto": "only when no terminal is attached", "always": "even at the prompt", "never": "off"}),
+    "inbox": ("Inbox folder inside the vault", None, str),
+    "timeout": ("Seconds to wait per fetch", 30, int),
+    "retries": ("Attempts per fetch", 3, int),
 }
 THROTTLE = ("http error 429", "not a bot", "rate-limited", "try again later")
 USAGE = """usage: yt2obsidian.py [URL]   save a transcript (no URL: prompt in a terminal, else read the clipboard)
@@ -78,7 +81,7 @@ def load_config():
     path = HERE / "config.toml"
     try:
         with open(path, "rb") as f:
-            cfg = {"timeout": 30, "retries": 3, **{k: True for k in TOGGLES}, **tomllib.load(f)}
+            cfg = {**{k: d for k, (_, d, _) in SETTINGS.items() if d is not None}, **tomllib.load(f)}
     except FileNotFoundError:
         raise ValueError(f"{path} not found; copy config.example.toml to config.toml") from None
     except tomllib.TOMLDecodeError as e:
@@ -86,9 +89,15 @@ def load_config():
     for k in ("vault", "inbox"):
         if k not in cfg:
             raise ValueError(f"{path}: missing {k!r}")
-    for k in TOGGLES:
-        if not isinstance(cfg[k], bool):
+    if isinstance(cfg["notify"], bool):  # the old on/off form
+        cfg["notify"] = "auto" if cfg["notify"] else "never"
+    for k, (_, _, allowed) in SETTINGS.items():
+        if allowed is bool and not isinstance(cfg[k], bool):
             raise ValueError(f"{path}: {k} must be true or false")
+        if isinstance(allowed, dict) and cfg[k] not in allowed:
+            raise ValueError(f"{path}: {k} must be {', '.join(allowed)}")
+        if allowed is int and not (isinstance(cfg[k], int) and not isinstance(cfg[k], bool) and cfg[k] >= 1):
+            raise ValueError(f"{path}: {k} must be a whole number, 1 or more")
     cfg["vault"] = Path(cfg["vault"]).expanduser()
     if not cfg["vault"].is_dir():
         raise ValueError(f"{path}: vault is not a folder: {cfg['vault']}")
@@ -103,51 +112,100 @@ def edit_config(fn):
     os.replace(tmp, path)
 
 
-def set_toggle(key, value):
-    """Rewrite `key = value` in config.toml, keeping comments; append if absent."""
-    line = f"{key} = {str(value).lower()}"
+def toml_line(key, value):
+    return f"{key} = {json.dumps(value, ensure_ascii=False)}"  # JSON bool/int/string syntax is valid TOML
 
+
+def put_line(text, key, value):
+    """text with `key = value` rewritten in place (trailing comment kept), or None if the key is absent."""
+    new, n = re.subn(rf'^{key}\s*=\s*("(?:[^"\\]|\\.)*"|[^\s#]+)', lambda m: toml_line(key, value), text, flags=re.M)
+    return new if n else None
+
+
+def set_value(key, value):
+    """Rewrite `key = value` in config.toml, keeping comments; append if absent."""
+    edit_config(lambda text: put_line(text, key, value) or text.rstrip("\n") + "\n" + toml_line(key, value) + "\n")
+
+
+def reset_settings():
+    """Put every setting that has a default back to it (inbox has none). Keys not in the file stay absent."""
     def put(text):
-        text, n = re.subn(rf"^{key}\s*=\s*\S+", line, text, flags=re.M)
-        return text if n else text.rstrip("\n") + "\n" + line + "\n"
+        for k, (_, default, _) in SETTINGS.items():
+            if default is not None:
+                text = put_line(text, k, default) or text
+        return text
 
     edit_config(put)
 
 
-def reset_toggles():
-    """Drop every toggle line from config.toml, so they all fall back to the default (on)."""
-    edit_config(lambda text: re.sub(rf"^({'|'.join(TOGGLES)})\s*=.*\n?", "", text, flags=re.M))
+def parse_setting(key, raw):
+    """Typed value for text typed into the menu. Raises ValueError with a message for the user."""
+    raw = raw.strip()
+    if SETTINGS[key][2] is int:
+        if not raw.isdigit() or int(raw) < 1:
+            raise ValueError("must be a whole number, 1 or more")
+        return int(raw)
+    if not raw or Path(raw).is_absolute() or ".." in Path(raw).parts:
+        raise ValueError("must be a relative folder name (no leading / and no ..)")
+    return raw
+
+
+def show_setting(key, v):
+    allowed = SETTINGS[key][2]
+    if allowed is bool:
+        return "on" if v else "off"
+    return f"{v} ({allowed[v]})" if isinstance(allowed, dict) else str(v)
 
 
 def unknown_keys(cfg):
-    return sorted(set(cfg) - {"vault", "inbox", "timeout", "retries", *TOGGLES})
+    return sorted(set(cfg) - {"vault", *SETTINGS})
 
 
 def settings_menu():
-    """Numbered on/off toggles; Enter, q or b returns to the prompt."""
-    keys = list(TOGGLES)
+    """Numbered settings: on/off flips, choices cycle, values are typed. Enter, q or b returns to the prompt."""
+    keys = list(SETTINGS)
     while True:
         try:
             cfg = load_config()
-            print(f"\nSettings  {HERE / 'config.toml'}\n  vault: {cfg['vault']}\n  inbox: {cfg['inbox']}")
+            print(f"\nSettings  {HERE / 'config.toml'}\n  vault: {cfg['vault']}")
             if (bad := unknown_keys(cfg)):
                 print(f"  warning: unknown keys ignored: {', '.join(bad)}")
             for i, k in enumerate(keys, 1):
-                print(f"  {i}. [{'x' if cfg[k] else ' '}] {TOGGLES[k]}")
+                label, _, allowed = SETTINGS[k]
+                print(f"  {i}. [{'x' if cfg[k] else ' '}] {label}" if allowed is bool else f"  {i}. {label}: {show_setting(k, cfg[k])}")
             try:
-                pick = input(f"[x] on, [ ] off. Number toggles, d resets, Enter goes back\nsettings> ").strip().lower()
+                pick = input("Number changes a setting, d resets, Enter goes back\nsettings> ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print()
                 return
             if pick in ("", "q", "b"):
                 return
             if pick == "d":
-                reset_toggles()
-                print("toggles reset to defaults (all on)")
+                reset_settings()
+                print("settings reset to defaults (inbox kept)")
             elif pick.isdigit() and 1 <= int(pick) <= len(keys):
                 k = keys[int(pick) - 1]
-                set_toggle(k, not cfg[k])
-                print(f"{TOGGLES[k]}: {'off' if cfg[k] else 'on'}")
+                label, _, allowed = SETTINGS[k]
+                if allowed is bool:
+                    new = not cfg[k]
+                elif isinstance(allowed, dict):
+                    opts = list(allowed)
+                    new = opts[(opts.index(cfg[k]) + 1) % len(opts)]
+                else:
+                    try:
+                        raw = input(f"{label} [{cfg[k]}], new value (Enter keeps it): ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        return
+                    if not raw:
+                        continue
+                    try:
+                        new = parse_setting(k, raw)
+                    except ValueError as e:
+                        print(f"{label} {e}")
+                        continue
+                set_value(k, new)
+                print(f"{label}: {show_setting(k, new)}")
             else:
                 print(f"pick 1-{len(keys)}, d, or Enter")
         except (ValueError, OSError) as e:
@@ -402,8 +460,9 @@ def queue_retry(url):
 
 
 def toast(cfg, msg, repl=False):
-    """Desktop notification, only for hotkey runs: with a terminal attached you are already looking at it."""
-    if (cfg or {}).get("notify", True) and not repl and not at_terminal():
+    """Desktop notification per the notify setting; auto skips runs with a terminal attached (you are already looking at it)."""
+    mode = (cfg or {}).get("notify", "auto")
+    if mode == "always" or (mode == "auto" and not repl and not at_terminal()):
         notify(msg)
 
 

@@ -1,8 +1,8 @@
 vault = "~/Documents/Panacea"   # Obsidian vault folder (its basename is the vault name)
 inbox = "Transcripts"           # folder inside the vault
-timeout = 30                    # seconds per fetch
-retries = 3
+timeout = 30                    # seconds per fetch (optional)
+retries = 3                     # attempts per fetch (optional)
 
-# Toggles (default true); the settings menu (`s` in the prompt, or `yt2obsidian.py --settings`) edits these.
+# Optional; the settings menu (`s` in the prompt, or `yt2obsidian.py --settings`) edits these and the ones above.
 # open_obsidian = true          # open the note in Obsidian after saving
-# notify = true                 # desktop notification (hotkey runs only)
+# notify = "auto"               # "auto" = toast for hotkey runs only, "always", or "never"
