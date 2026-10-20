@@ -327,9 +327,10 @@ def fetch_track(url, timeout):
 def pick_track(info):
     """URL of the best English json3 caption track (manual before auto), or None."""
     for key in ("subtitles", "automatic_captions"):
-        for lang, formats in (info.get(key) or {}).items():
+        tracks = info.get(key) or {}
+        for lang in sorted(tracks, key=lambda k: k != "en"):  # plain `en` before en-US, en-orig...
             if lang == "en" or lang.startswith("en-"):
-                for f in formats:
+                for f in tracks[lang]:
                     # tlang= marks a machine translation, not a real English track
                     if f.get("ext") == "json3" and f.get("url") and "tlang=" not in f["url"]:
                         return f["url"]
@@ -337,9 +338,11 @@ def pick_track(info):
 
 
 def transcript_text(track):
-    """Join a json3 caption track (parsed dict) into one whitespace-collapsed string."""
+    """Join a json3 caption track (parsed dict) into one string: sound tags (`[Music]`, `[ __ ]`) and `♪` dropped,
+    a blank line at each `>>` speaker change."""
     events = ("".join(s.get("utf8", "") for s in e.get("segs") or []) for e in track.get("events", []))
-    return re.sub(r"\s+", " ", " ".join(events)).strip()
+    text = re.sub(r"\[[^\]]*\]|♪", " ", " ".join(events))  # real tracks only use brackets for sounds and censoring
+    return re.sub(r" ?>> ?", "\n\n", re.sub(r"\s+", " ", text)).strip()
 
 
 # yt-dlp 2026.08.19, real runs: live now -> info with live_status "is_live"; no captions -> info with no
@@ -357,7 +360,10 @@ def stub_reason(info, exc=None):
         return RESTRICTED
     if exc:
         return f"transcript fetch failed: {msg}"
-    return NO_CAPS
+    # manual tracks and original-language auto tracks; the auto list also holds every machine translation
+    others = [k for k in (info.get("subtitles") or {}) if not k.startswith("en")]
+    others += [k for k in (info.get("automatic_captions") or {}) if k.endswith("-orig") and not k.startswith("en")]
+    return f"no English captions (found: {', '.join(others[:5])})" if others else NO_CAPS
 
 
 def safe_name(title, vid):

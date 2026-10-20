@@ -47,6 +47,8 @@ def test_pick_track():
     assert y.pick_track({"subtitles": {"fr": t("fr")}, "automatic_captions": {"de": t("de")}}) is None
     assert y.pick_track({"subtitles": {"en": [{"ext": "vtt", "url": "x"}]}}) is None
     assert y.pick_track({}) is None
+    assert y.pick_track({"automatic_captions": {"en-US": t("us"), "en": t("en")}}) == "en"  # plain en first
+    assert y.pick_track({"automatic_captions": {"en-orig": t("orig")}}) == "orig"
     # auto "en" that is really a translation of another language is rejected
     tr = [{"ext": "json3", "url": "https://x/timedtext?lang=ko&tlang=en"}]
     assert y.pick_track({"automatic_captions": {"en": tr}}) is None
@@ -57,6 +59,11 @@ def test_transcript_text():
                         {"tStartMs": 5}, {"segs": [{"utf8": "second\nline"}]}]}
     assert y.transcript_text(track) == "Hello world second line"
     assert y.transcript_text({}) == ""
+    # shapes seen in real tracks: music marks, sound tags, the `[ __ ]` censor, `>>` speaker changes
+    ev = lambda *t: {"events": [{"segs": [{"utf8": x}]} for x in t]}
+    assert y.transcript_text(ev("[♪♪♪] ♪ We're no strangers ♪", "[Music]")) == "We're no strangers"
+    assert y.transcript_text(ev("what the [ __ ] is", "that [laughter] >> I", "don't know")) == "what the is that\n\nI don't know"
+    assert y.transcript_text(ev("[Music]", "♪ ♪")) == ""  # nothing left: caller writes the no-captions stub
 
 
 def test_stub_reason():
@@ -68,6 +75,8 @@ def test_stub_reason():
     assert y.stub_reason({}, Exception("Join this channel to get access")) == y.RESTRICTED
     assert y.stub_reason({}, Exception("Premieres in 2 hours")) == y.LIVE
     assert y.stub_reason({"live_status": "not_live"}) == y.NO_CAPS
+    assert y.stub_reason({"subtitles": {"fr": [], "de": []}, "automatic_captions": {"es-orig": [], "ja": []}}) \
+        == "no English captions (found: fr, de, es-orig)"
     assert "boom" in y.stub_reason({}, Exception("boom"))
 
 
@@ -126,10 +135,10 @@ def notes(d):
 def test_main_saved_and_duplicate():
     info = {"title": "Héllo 🔥 日本 World", "channel": "C", "upload_date": "20200101",
             "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
-    track = {"events": [{"segs": [{"utf8": "hi there"}]}]}
+    track = {"events": [{"segs": [{"utf8": "hi there 日本語 café"}]}]}
     code, calls, d = run_main(f"https://youtu.be/{V}", info, track)
     assert code == 0 and [p.name for p in notes(d)] == ["Hllo World.md"]
-    assert "hi there" in notes(d)[0].read_text() and "saved" in (d / "run.log").read_text()
+    assert "hi there 日本語 café" in notes(d)[0].read_text() and "saved" in (d / "run.log").read_text()
     code, calls, _ = run_main(f"https://youtu.be/{V}", info, track, tmp=d)  # duplicate: no fetch, no new file
     assert code == 0 and calls["fetch"] == 0 and len(notes(d)) == 1
     assert "duplicate" in (d / "run.log").read_text()
@@ -158,6 +167,10 @@ def test_main_stubs():
         assert f"No transcript: {want}" in body, (want, body)
         assert not (d / "retry.txt").exists()
     assert notes(d)[0].name == f"video-{V}.md"  # no title available
+    # a track that is only music tags gives a stub, not an empty note
+    info = {**base, "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    code, _, d = run_main(f"https://youtu.be/{V}", info, {"events": [{"segs": [{"utf8": "[♪♪♪]"}]}]})
+    assert code == 0 and f"No transcript: {y.NO_CAPS}" in notes(d)[0].read_text()
 
 
 def test_main_throttle_and_timeout():
