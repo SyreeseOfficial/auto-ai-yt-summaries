@@ -150,6 +150,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## E. Remove or simplify code
 
+**Status: done (25 of 29), 2026-10-20.** Not done, after testing against live YouTube: #108 (with `ignore_no_formats_error` a deleted video returns `None` instead of raising, which would break the "video unavailable" failure), #109 and #112 (depend on #108; private/members-only still arrive as exceptions), #110 (`skip: translated_subs` still returns 1085 `tlang=` URLs for the test video, so the check stays). #118 was already done in D (`finish`); the success path now uses it too (#119), so a save toasts through the same code as a failure. #114/#115/#120: network errors are classified by type (`transient`) and the caption fetch uses `ydl.urlopen`; a 403/404 on the caption URL fails at once (checked live: 404 is not retried). #128: `write_atomic` is a temp file + `os.replace` after an `exists()` check (the run lock covers the race); this also removes the hard-link need (#208). #134: removed the `/v/` path, kept `music.youtube.com`. `Throttled` is now `Stop`; `fetch`, `fetch_track`, `with_retries` take ints; `main(args)` takes the URL as `args[0]`. Tests use `y.` everywhere and imports sit at the top.
+
 106. **[S]** **Delete `from yt2obsidian import *`** in the tests (`test_yt2obsidian.py:2`). It is already imported as `y`. Pick one style.
 107. **[S]** **Delete `skip_download` and `noplaylist`** from the yt-dlp options (:110). `extract_info(download=False)` already skips the download, and the URL is a single `watch?v=` link.
 108. **[V][S]** **Add `ignore_no_formats_error: True`** (real option, `YoutubeDL.py:261`). Upcoming and format-less videos then return `info` instead of raising, so the `exc` path in `stub_reason` shrinks.

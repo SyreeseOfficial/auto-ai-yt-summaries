@@ -1,5 +1,10 @@
 """Plain-assert tests: python test_yt2obsidian.py"""
-from yt2obsidian import *
+import contextlib
+import io
+import tempfile
+from pathlib import Path
+from unittest import mock
+
 import yt2obsidian as y
 
 V = "dQw4w9WgXcQ"
@@ -17,92 +22,86 @@ def test_parse_url():
     for u in (f"https://www.youtube.com/watch?v={V}", f"https://youtu.be/{V}",
               f"https://youtu.be/{V}?t=42&si=abc", f"https://www.youtube.com/watch?feature=share&v={V}&t=1s",
               f"https://m.youtube.com/watch?v={V}", f"https://www.youtube.com/live/{V}?feature=share",
-              f"https://www.youtube.com/embed/{V}", f"  https://youtube.com/watch?v={V}\n"):
-        assert parse_url(u) == (V, "video"), u
-    assert parse_url(f"https://www.youtube.com/shorts/{V}") == (V, "short")
+              f"https://www.youtube.com/embed/{V}"):
+        assert y.parse_url(u) == (V, False), u
+    assert y.parse_url(f"https://www.youtube.com/shorts/{V}") == (V, True)
     for u in ("hello", "https://example.com/watch?v=" + V, "https://www.youtube.com/watch",
               "https://www.youtube.com/watch?v=short", "https://www.youtube.com/@channel", ""):
-        assert raises(parse_url, u), u
+        assert raises(y.parse_url, u), u
 
 
 def test_safe_name():
-    assert safe_name('a/b\\c:d*e?f"g<h>i|j', V) == "abcdefghij"
-    assert safe_name("Hello 🔥 World 日本語", V) == "Hello World"
-    assert safe_name("日本語🔥", V) == f"video-{V}"
-    assert safe_name("  .Title with  spaces. ", V) == "Title with spaces"
-    long = safe_name("x" * 400, V)
+    assert y.safe_name('a/b\\c:d*e?f"g<h>i|j', V) == "abcdefghij"
+    assert y.safe_name("Hello 🔥 World 日本語", V) == "Hello World"
+    assert y.safe_name("日本語🔥", V) == f"video-{V}"
+    assert y.safe_name("  .Title with  spaces. ", V) == "Title with spaces"
+    long = y.safe_name("x" * 400, V)
     assert len((long + " (99).md").encode()) <= 255
 
 
 def test_pick_track():
     t = lambda u: [{"ext": "vtt", "url": u + ".vtt"}, {"ext": "json3", "url": u}]
-    assert pick_track({"subtitles": {"en-GB": t("manual")}, "automatic_captions": {"en": t("auto")}}) == "manual"
-    assert pick_track({"automatic_captions": {"en": t("auto")}}) == "auto"
-    assert pick_track({"subtitles": {"en-US": t("us")}}) == "us"
-    assert pick_track({"subtitles": {"fr": t("fr")}, "automatic_captions": {"de": t("de")}}) is None
-    assert pick_track({"subtitles": {"en": [{"ext": "vtt", "url": "x"}]}}) is None
-    assert pick_track({}) is None
+    assert y.pick_track({"subtitles": {"en-GB": t("manual")}, "automatic_captions": {"en": t("auto")}}) == "manual"
+    assert y.pick_track({"automatic_captions": {"en": t("auto")}}) == "auto"
+    assert y.pick_track({"subtitles": {"en-US": t("us")}}) == "us"
+    assert y.pick_track({"subtitles": {"fr": t("fr")}, "automatic_captions": {"de": t("de")}}) is None
+    assert y.pick_track({"subtitles": {"en": [{"ext": "vtt", "url": "x"}]}}) is None
+    assert y.pick_track({}) is None
     # auto "en" that is really a translation of another language is rejected
     tr = [{"ext": "json3", "url": "https://x/timedtext?lang=ko&tlang=en"}]
-    assert pick_track({"automatic_captions": {"en": tr}}) is None
+    assert y.pick_track({"automatic_captions": {"en": tr}}) is None
 
 
 def test_transcript_text():
     track = {"events": [{"segs": [{"utf8": "Hello  "}, {"utf8": "world"}]}, {"segs": [{"utf8": "\n"}]},
                         {"tStartMs": 5}, {"segs": [{"utf8": "second\nline"}]}]}
-    assert transcript_text(track) == "Hello world second line"
-    assert transcript_text({}) == ""
+    assert y.transcript_text(track) == "Hello world second line"
+    assert y.transcript_text({}) == ""
 
 
 def test_stub_reason():
-    assert stub_reason({"live_status": "is_upcoming"}) == y.LIVE
-    assert stub_reason({"live_status": "is_live"}) == y.LIVE
+    assert y.stub_reason({"live_status": "is_upcoming"}) == y.LIVE
+    assert y.stub_reason({"live_status": "is_live"}) == y.LIVE
     for info in ({"availability": "private"}, {"availability": "subscriber_only"}, {"age_limit": 18}):
-        assert stub_reason(info) == y.RESTRICTED
-    assert stub_reason({}, Exception("Private video. Sign in")) == y.RESTRICTED
-    assert stub_reason({}, Exception("Join this channel to get access")) == y.RESTRICTED
-    assert stub_reason({}, Exception("Premieres in 2 hours")) == y.LIVE
-    assert stub_reason({"live_status": "not_live"}) == y.NO_CAPS
-    assert "boom" in stub_reason({}, Exception("boom"))
+        assert y.stub_reason(info) == y.RESTRICTED
+    assert y.stub_reason({}, Exception("Private video. Sign in")) == y.RESTRICTED
+    assert y.stub_reason({}, Exception("Join this channel to get access")) == y.RESTRICTED
+    assert y.stub_reason({}, Exception("Premieres in 2 hours")) == y.LIVE
+    assert y.stub_reason({"live_status": "not_live"}) == y.NO_CAPS
+    assert "boom" in y.stub_reason({}, Exception("boom"))
 
 
 def test_render():
     info = {"title": "My [Video]", "channel": "Chan", "upload_date": "20240131"}
-    note = render(info, V, "the text")
+    note = y.render(info, V, "the text")
     assert note == f"[My (Video)](https://www.youtube.com/watch?v={V})\nChannel: Chan\nDate: 2024-01-31\n\nthe text\n"
     assert not note.startswith(("#", "---"))
-    stub = render(info, V, None, y.NO_CAPS)
+    stub = y.render(info, V, None, y.NO_CAPS)
     assert "Title: My [Video]" in stub and "Channel: Chan" in stub and "No transcript: no captions available" in stub
-    assert "unknown" in render({}, V, "t")
+    assert "unknown" in y.render({}, V, "t")
 
 
 def test_write_path():
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
     with tempfile.TemporaryDirectory() as d:
         inbox = Path(d) / "deep" / "Inbox"  # created on demand
-        a = write_atomic(inbox, "Title", render({"title": "T"}, V, "x"))
+        a = y.write_atomic(inbox, "Title", y.render({"title": "T"}, V, "x"))
         assert a.name == "Title.md"
-        b = write_atomic(inbox, "Title", "other")  # same name, different video
+        b = y.write_atomic(inbox, "Title", "other")  # same name, different video
         assert b.name == "Title (2).md" and a.read_text().endswith("x\n")
-        assert find_existing(inbox, V) == a
-        assert find_existing(inbox, "AAAAAAAAAAA") is None
+        assert y.find_existing(inbox, V) == a
+        assert y.find_existing(inbox, "AAAAAAAAAAA") is None
         assert [p.name for p in inbox.iterdir() if p.name.startswith(".")] == []
         # a failed write leaves no temp file and no note
-        with mock.patch("os.link", side_effect=OSError("boom")):
+        with mock.patch("os.replace", side_effect=OSError("boom")):
             try:
-                write_atomic(inbox, "Other", "x")
+                y.write_atomic(inbox, "Other", "x")
             except OSError:
                 pass
         assert sorted(p.name for p in inbox.iterdir()) == ["Title (2).md", "Title.md"]
 
 
 def run_main(url, fetch=None, track=None, tmp=None):
-    """Run main() against a tmp vault with network/UI stubbed. Returns (code, calls, tmp Path)."""
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
+    """Run y.main() against a tmp vault with network/UI stubbed. Returns (code, calls, tmp Path)."""
     d = Path(tmp or tempfile.mkdtemp())
     cfg = {"vault": d / "vault", "inbox": "Inbox", "timeout": 1, "retries": 3}
     calls = {"fetch": 0, "notify": []}
@@ -116,7 +115,7 @@ def run_main(url, fetch=None, track=None, tmp=None):
     with mock.patch.multiple(y, fetch=fake_fetch, fetch_track=lambda u, c: track, RETRY_DELAY=0,
                              LOG=d / "run.log", RETRY=d / "retry.txt", at_terminal=lambda: False,
                              notify=lambda m, u=False: calls["notify"].append(m), open_obsidian=lambda *a: None):
-        code = main([None, url], cfg)
+        code = y.main([url], cfg)
     return code, calls, d
 
 
@@ -162,8 +161,8 @@ def test_main_stubs():
 
 
 def test_main_throttle_and_timeout():
-    for exc, tries in ((y.Throttled("429"), 1), (TimeoutError("timed out"), 3),
-                       (y.yt_dlp.utils.DownloadError("ERROR: Unable to download webpage: timed out"), 3)):
+    for exc, tries in ((y.Stop("429"), 1), (y.TransportError("timed out"), 3),
+                       (y.yt_dlp.utils.DownloadError("ERROR: Unable to download webpage", (y.TransportError, y.TransportError("x"), None)), 3)):
         code, calls, d = run_main(f"https://youtu.be/{V}?t=5", exc)
         assert code == 2 and calls["fetch"] == tries, exc
         assert (d / "retry.txt").read_text() == f"https://www.youtube.com/watch?v={V}\n"
@@ -181,82 +180,81 @@ def test_main_crash_paths():
 
 
 def test_throttle_messages():
-    from unittest import mock
     msg = "ERROR: [youtube] x: This content isn't available, try again later. rate-limited by YouTube for up to an hour"
     with mock.patch.object(y.yt_dlp, "YoutubeDL") as ydl:
         ydl.return_value.__enter__.return_value.extract_info.side_effect = y.yt_dlp.utils.DownloadError(msg)
         try:
-            fetch(V, {"timeout": 1})
-        except Throttled:
+            y.fetch(V, 1)
+        except y.Stop:
             pass
         else:
             assert False, "rate-limited message must be a throttle"
 
 
 def test_retry_only_transient():
-    import urllib.error
-    for code, calls in ((403, 1), (404, 1), (503, 3)):
+    from yt_dlp.networking.exceptions import HTTPError, TransportError
+    wrap = lambda e: y.yt_dlp.utils.DownloadError("x", (type(e), e, None))
+    for exc, calls in ((HTTPError(mock.Mock(status=403)), 1), (HTTPError(mock.Mock(status=404)), 1),
+                       (HTTPError(mock.Mock(status=503)), 3), (TransportError("timed out"), 3),
+                       (wrap(TransportError("[Errno 111] Connection refused")), 3), (wrap(HTTPError(mock.Mock(status=403))), 1),
+                       (y.yt_dlp.utils.DownloadError("Video unavailable"), 1)):
         n = []
 
         def fn():
             n.append(1)
-            raise urllib.error.HTTPError("u", code, "x", {}, None)
+            raise exc
         try:
-            with_retries(fn, {"retries": 3})
-        except (urllib.error.HTTPError, Throttled):
+            y.with_retries(fn, 3)
+        except (HTTPError, y.yt_dlp.utils.DownloadError, y.Stop):
             pass
-        assert len(n) == calls, code
+        assert len(n) == calls, exc
 
 
 def test_fetch_track_bad_json():
-    import io
-    from unittest import mock
-    with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(b"<html>nope</html>")):
-        assert raises(fetch_track, "u", {"timeout": 1})
+    with mock.patch.object(y.yt_dlp, "YoutubeDL") as ydl:
+        ydl.return_value.__enter__.return_value.urlopen.return_value = io.BytesIO(b"<html>nope</html>")
+        assert raises(y.fetch_track, "u", 1)
 
 
 def test_misc_a():
-    assert not ID_RE.fullmatch("é" * 11) and raises(parse_url, "https://youtu.be/" + "é" * 11)
-    assert pick_track({"subtitles": {"en": [{"ext": "json3"}]}}) is None  # format without url
-    assert stub_reason({}, Exception("Boom Loud")).endswith("Boom Loud")  # case kept
-    assert "\\*" in render({"title": "a*b_c"}, V, "t") and "\\_" in render({"title": "a*b_c"}, V, "t")
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
+    assert not y.ID_RE.fullmatch("é" * 11) and raises(y.parse_url, "https://youtu.be/" + "é" * 11)
+    assert y.pick_track({"subtitles": {"en": [{"ext": "json3"}]}}) is None  # format without url
+    assert y.stub_reason({}, Exception("Boom Loud")).endswith("Boom Loud")  # case kept
+    assert "\\*" in y.render({"title": "a*b_c"}, V, "t") and "\\_" in y.render({"title": "a*b_c"}, V, "t")
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         with mock.patch.multiple(y, LOG=d / "run.log"):
-            log_run("u", "failed", "line1\n\tline2")
+            y.log_run("u", "failed", "line1\n\tline2")
         assert (d / "run.log").read_text().count("\n") == 1
         # a note with front matter still dedupes; a stub is recognised
         (d / "a.md").write_text(f"---\ntags: x\n---\n[T](https://www.youtube.com/watch?v={V})\n")
-        assert find_existing(d, V) == d / "a.md"
-        (d / "b.md").write_text(render({"title": "T"}, V, None, y.NO_CAPS))
-        assert is_stub(d / "b.md") and not is_stub(d / "a.md")
-        assert not is_stub(Path(d / "c.md").write_text("x") and d / "c.md")
+        assert y.find_existing(d, V) == d / "a.md"
+        (d / "b.md").write_text(y.render({"title": "T"}, V, None, y.NO_CAPS))
+        assert y.is_stub(d / "b.md") and not y.is_stub(d / "a.md")
+        assert not y.is_stub(Path(d / "c.md").write_text("x") and d / "c.md")
         # clash cap: 99 names then an error
         for _ in range(99):
-            write_atomic(d / "I", "N", "x")
-        assert raises_os(write_atomic, d / "I", "N", "x")
+            y.write_atomic(d / "I", "N", "x")
+        assert raises_os(y.write_atomic, d / "I", "N", "x")
         # config errors are readable ValueErrors, not tracebacks
         with mock.patch.object(y, "HERE", d):
-            assert "not found" in err_of(load_config)
+            assert "not found" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\n' % d)
-            assert "missing 'inbox'" in err_of(load_config)
+            assert "missing 'inbox'" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = "false"\n' % d)
-            assert "notify must be auto, always, never" in err_of(load_config)
+            assert "notify must be auto, always, never" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = false\nopen_obsidian = "no"\n' % d)
-            assert "true or false" in err_of(load_config)
+            assert "true or false" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nretries = 0\n' % d)
-            assert "retries must be a whole number" in err_of(load_config)
+            assert "retries must be a whole number" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\nnotify = false\n' % d)
-            assert load_config()["notify"] == "never"  # the old on/off form still reads
+            assert y.load_config()["notify"] == "never"  # the old on/off form still reads
             (d / "config.toml").write_text('vault = "%s/nope"\ninbox = "I"\n' % d)
-            assert "not a folder" in err_of(load_config)
+            assert "not a folder" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = [oops\n')
-            assert "line 1" in err_of(load_config)
+            assert "line 1" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\n' % d)
-            assert load_config()["notify"] == "auto"
+            assert y.load_config()["notify"] == "auto"
 
 
 def raises_os(f, *a):
@@ -276,20 +274,16 @@ def err_of(f):
 
 
 def test_cli():
-    from unittest import mock
     with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9), \
             mock.patch.object(y, "at_terminal", return_value=False):
-        assert cli([]) == 7 and cli(["-i"]) == 9 and cli(["-h"]) == 0 and cli(["--help"]) == 0
-        assert cli(["-i", "https://youtu.be/x"]) == 1 and cli(["--bogus"]) == 1
+        assert y.cli([]) == 7 and y.cli(["-i"]) == 9 and y.cli(["-h"]) == 0 and y.cli(["--help"]) == 0
+        assert y.cli(["-i", "https://youtu.be/x"]) == 1 and y.cli(["--bogus"]) == 1
         with mock.patch.object(y, "settings_menu") as menu:
-            assert cli(["--settings"]) == 0 and menu.called
+            assert y.cli(["--settings"]) == 0 and menu.called
 
 
 def run_repl(lines, info=None, track=None, retry=None):
-    """Drive repl() with scripted input against a tmp vault. Returns (output, tmp Path, opened paths)."""
-    import contextlib, io, tempfile
-    from pathlib import Path
-    from unittest import mock
+    """Drive y.repl() with scripted input against a tmp vault. Returns (output, tmp Path, opened paths)."""
     d = Path(tempfile.mkdtemp())
     (d / "vault").mkdir()
     (d / "config.toml").write_text(f'vault = "{d}/vault"\ninbox = "Inbox"\n')
@@ -312,7 +306,7 @@ def run_repl(lines, info=None, track=None, retry=None):
                              open_obsidian=lambda v, p: opened.append(("open", p)),
                              clipboard=lambda: "https://youtu.be/" + V), \
             mock.patch("builtins.input", fake_input), contextlib.redirect_stdout(out):
-        assert repl() == 0
+        assert y.repl() == 0
     return out.getvalue(), d, opened
 
 
@@ -345,7 +339,7 @@ def test_repl_survives_errors():
 
 
 def test_repl_throttle_and_retry():
-    out, d, _ = run_repl([f"https://youtu.be/{V}", "q"], y.Throttled("429", "throttled by YouTube"))
+    out, d, _ = run_repl([f"https://youtu.be/{V}", "q"], y.Stop("429", "throttled by YouTube"))
     assert "stopped: throttled by YouTube" in out and "press r" in out
     assert "1 URL waiting in retry.txt (r to retry)" in out and "1 stopped" in out
     assert (d / "retry.txt").read_text() == f"https://www.youtube.com/watch?v={V}\n"
@@ -355,7 +349,7 @@ def test_repl_throttle_and_retry():
     out, d, _ = run_repl(["r", "q"], info, track, retry=f"https://youtu.be/{V}\n")
     assert "saved (" in out and (d / "retry.txt").read_text() == "" and "waiting" not in out
     two = f"https://youtu.be/{V}\nhttps://youtu.be/AAAAAAAAAAA\n"
-    out, d, _ = run_repl(["r", "q"], y.Throttled("429"), retry=two)
+    out, d, _ = run_repl(["r", "q"], y.Stop("429"), retry=two)
     assert out.count("stopped:") == 1 and (d / "retry.txt").read_text() == two
     out, d, _ = run_repl(["r", "q"])
     assert "retry.txt is empty" in out
@@ -363,8 +357,8 @@ def test_repl_throttle_and_retry():
 
 def test_batch_and_undo():
     ids = ["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC"]
-    assert urls_in("a\nhttps://youtu.be/x https://youtu.be/y\n") == ["https://youtu.be/x", "https://youtu.be/y"]
-    assert urls_in("garbage in here") == ["garbage in here"] and urls_in(" one ") == ["one"]
+    assert y.urls_in("a\nhttps://youtu.be/x https://youtu.be/y\n") == ["https://youtu.be/x", "https://youtu.be/y"]
+    assert y.urls_in("garbage in here") == ["garbage in here"] and y.urls_in(" one ") == ["one"]
     info = {"title": "T", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
     track = {"events": [{"segs": [{"utf8": "hi"}]}]}
     # a pasted list: each link saved in turn (same title -> numbered names), then undo deletes the last, with a prompt
@@ -374,61 +368,57 @@ def test_batch_and_undo():
     out, d, _ = run_repl(["undo", "q"])
     assert "nothing to undo" in out
     # a throttle on the first link queues the untried ones, in canonical form, and stops
-    out, d, _ = run_repl([" ".join(f"https://youtu.be/{i}?t=5" for i in ids), "q"], y.Throttled("429"))
+    out, d, _ = run_repl([" ".join(f"https://youtu.be/{i}?t=5" for i in ids), "q"], y.Stop("429"))
     assert out.count("stopped:") == 1 and "queued the other 2" in out
     assert (d / "retry.txt").read_text().split() == [f"https://www.youtube.com/watch?v={i}" for i in ids]
 
 
 def test_settings():
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         cfgfile = d / "config.toml"
         cfgfile.write_text(f'vault = "{d}"  # mine\ninbox = "I I"  # box\nnotify = "auto"  # keep\ntimeout = 30\nnotfy = 1\n')
         text = lambda: cfgfile.read_text()
         with mock.patch.object(y, "HERE", d):
-            set_value("notify", "never")  # rewritten in place, comment and other keys kept
+            y.set_value("notify", "never")  # rewritten in place, comment and other keys kept
             assert 'notify = "never"  # keep' in text() and "# mine" in text()
-            set_value("inbox", "New Box")  # a quoted value with spaces is replaced whole
+            y.set_value("inbox", "New Box")  # a quoted value with spaces is replaced whole
             assert 'inbox = "New Box"  # box' in text()
-            set_value("open_obsidian", False)  # absent key is appended, lowercase
+            y.set_value("open_obsidian", False)  # absent key is appended, lowercase
             assert text().endswith("open_obsidian = false\n")
-            assert not list(d.glob("*.tmp")) and unknown_keys(load_config()) == ["notfy"]
-            assert load_config()["notify"] == "never" and load_config()["inbox"] == "New Box"
-            reset_settings()  # defaults back; inbox and keys that were absent are left alone
-            c = load_config()
+            assert not list(d.glob("*.tmp")) and y.unknown_keys(y.load_config()) == ["notfy"]
+            assert y.load_config()["notify"] == "never" and y.load_config()["inbox"] == "New Box"
+            y.reset_settings()  # defaults back; inbox and keys that were absent are left alone
+            c = y.load_config()
             assert c["notify"] == "auto" and c["open_obsidian"] is True and c["inbox"] == "New Box"
             assert 'notify = "auto"  # keep' in text() and "retries" not in text()
             # input rules
-            assert parse_setting("timeout", " 45 ") == 45 and parse_setting("inbox", " Notes/Yt ") == "Notes/Yt"
+            assert y.parse_setting("timeout", " 45 ") == 45 and y.parse_setting("inbox", " Notes/Yt ") == "Notes/Yt"
             for key, bad in (("timeout", "0"), ("retries", "x"), ("retries", "-1"), ("inbox", ""), ("inbox", "/tmp/x"), ("inbox", "../x")):
-                assert raises(parse_setting, key, bad)
+                assert raises(y.parse_setting, key, bad)
             # the menu: flip (1), cycle (2), type a value (3, 4), bad input, leave
             feed = iter(["1", "2", "3", "Notes", "4", "0", "4", "", "x", "9", "q"])
             with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print") as pr:
-                settings_menu()
+                y.settings_menu()
             shown = "\n".join(str(c.args[0]) for c in pr.call_args_list if c.args)
             assert "Open the note in Obsidian after saving: off" in shown
             assert "Desktop notifications: always (even at the prompt)" in shown
             assert "Inbox folder inside the vault: Notes" in shown and "Seconds to wait per fetch must be a whole number" in shown
             assert shown.count("pick 1-5") == 2 and "unknown keys ignored: notfy" in shown
-            c = load_config()
+            c = y.load_config()
             assert (c["open_obsidian"], c["notify"], c["inbox"], c["timeout"]) == (False, "always", "Notes", 30)
             feed = iter(["d", ""])
             with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print"):
-                settings_menu()
-            assert load_config()["notify"] == "auto" and load_config()["inbox"] == "Notes"
+                y.settings_menu()
+            assert y.load_config()["notify"] == "auto" and y.load_config()["inbox"] == "Notes"
             # a broken config returns to the caller with a message, not a traceback
             cfgfile.write_text("vault = [oops\n")
             with mock.patch("builtins.print") as pr:
-                settings_menu()
+                y.settings_menu()
             assert "Config problem" in str(pr.call_args)
 
 
 def test_toast_modes():
-    from unittest import mock
     sent = []
     for mode, repl, term, want in (("auto", False, False, 1), ("auto", False, True, 0), ("auto", True, False, 0),
                                    ("always", True, True, 1), ("never", False, False, 0)):
@@ -449,33 +439,28 @@ def test_settings_apply_to_next_paste():
 
 
 def test_update_and_default_mode():
-    import contextlib, io
-    from unittest import mock
     out = io.StringIO()
     run = lambda rc: mock.Mock(returncode=rc, stdout="", stderr="no network")
     with contextlib.redirect_stdout(out):
         with mock.patch.object(y.subprocess, "run", return_value=run(1)):
-            update_ytdlp()
+            y.update_ytdlp()
         with mock.patch.object(y.subprocess, "run", return_value=run(0)):
-            update_ytdlp()
+            y.update_ytdlp()
         with mock.patch.object(y.subprocess, "run", side_effect=KeyboardInterrupt):
-            update_ytdlp()
+            y.update_ytdlp()
     assert "update failed: no network" in out.getvalue() and "already the latest" in out.getvalue()
     assert "update failed: cancelled" in out.getvalue()
     with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9):
         with mock.patch.object(y, "at_terminal", return_value=True), mock.patch.object(y.signal, "signal"):
-            assert cli([]) == 9  # a terminal with no argument gets the prompt
+            assert y.cli([]) == 9  # a terminal with no argument gets the prompt
         with mock.patch.object(y, "at_terminal", return_value=False):
-            assert cli([]) == 7  # the hotkey has no terminal: clipboard mode
+            assert y.cli([]) == 7  # the hotkey has no terminal: clipboard mode
 
 
 def test_clean_cap_rel():
-    assert clean("a\x1b[31m\n b\t") == "a [31m b" and cap("x" * 300).endswith("…") and len(cap("x" * 300)) == 200
-    assert rel("/v/Inbox/a.md", "/v") == "Inbox/a.md" and rel("/elsewhere/a.md", "/v") == "/elsewhere/a.md"
-    assert len(err_of(lambda: parse_url("x" * 500))) < 100
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
+    assert y.clean("a\x1b[31m\n b\t") == "a [31m b" and y.cap("x" * 300).endswith("…") and len(y.cap("x" * 300)) == 200
+    assert y.rel("/v/Inbox/a.md", "/v") == "Inbox/a.md" and y.rel("/elsewhere/a.md", "/v") == "/elsewhere/a.md"
+    assert len(err_of(lambda: y.parse_url("x" * 500))) < 100
     with tempfile.TemporaryDirectory() as d:
         a, b, gone = (str(Path(d) / n) for n in ("a.md", "b.md", "gone.md"))
         for n in (a, b):
@@ -484,19 +469,16 @@ def test_clean_cap_rel():
                 "t5\tu\tfailed\tx"]
         (Path(d) / "run.log").write_text("\n".join(rows) + "\n")
         with mock.patch.object(y, "LOG", Path(d) / "run.log"):
-            assert recent_saves() == [("t2", a), ("t3", b)]  # old row, deleted note, failure: all left out
-            assert recent_saves(1) == [("t3", b)]
+            assert y.recent_saves() == [("t2", a), ("t3", b)]  # old row, deleted note, failure: all left out
+            assert y.recent_saves(1) == [("t3", b)]
 
 
 def test_one_shot_flags_and_toasts():
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
     with mock.patch.object(y, "main", return_value=0) as m, mock.patch.object(y, "at_terminal", return_value=False):
-        assert cli(["--no-open", "--no-notify", "u"]) == 0
-        assert m.call_args.args == ([None, "u"],) and m.call_args.kwargs == {"retry": False, "open_obsidian": False, "notify": "never"}
-        assert cli(["--retry"]) == 0 and m.call_args.kwargs["retry"] is True
-        assert cli(["--retry", "u"]) == 1  # a URL and --retry together make no sense
+        assert y.cli(["--no-open", "--no-notify", "u"]) == 0
+        assert m.call_args.args == (["u"],) and m.call_args.kwargs == {"retry": False, "open_obsidian": False, "notify": "never"}
+        assert y.cli(["--retry"]) == 0 and m.call_args.kwargs["retry"] is True
+        assert y.cli(["--retry", "u"]) == 1  # a URL and --retry together make no sense
     info = {"title": "T", "channel": "C", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
     track = {"events": [{"segs": [{"utf8": "hi"}]}]}
     code, calls, d = run_main(f"https://youtu.be/{V}", info, track)
@@ -512,29 +494,26 @@ def test_one_shot_flags_and_toasts():
     def fetch(vid, c):
         if vid == V:
             return info
-        raise Throttled("429", "throttled")
+        raise y.Stop("429", "throttled")
     with mock.patch.multiple(y, fetch=fetch, fetch_track=lambda u, c: track, LOG=d / "run.log", RETRY=d / "retry.txt",
                              LOCK=d / ".lock", at_terminal=lambda: False, notify=lambda m, u=False: None,
                              open_obsidian=lambda *a: None):
-        assert main(retry=True, cfg=cfg) == 2
+        assert y.main(retry=True, cfg=cfg) == 2
     assert (d / "retry.txt").read_text() == "https://www.youtube.com/watch?v=aaaaaaaaaab\n" and (d / "Inbox" / "T.md").exists()
     # notify builds the right command; failures are critical, successes time out
     with mock.patch.object(y.subprocess, "Popen") as pop:
-        notify("m", True)
-        notify("m")
+        y.notify("m", True)
+        y.notify("m")
     assert pop.call_args_list[0].args[0] == ["notify-send", "-a", "yt2obsidian", "-u", "critical", "m"]
     assert pop.call_args_list[1].args[0] == ["notify-send", "-a", "yt2obsidian", "-t", "3000", "m"]
 
 
 def test_lock_serializes_runs():
-    import tempfile
-    from pathlib import Path
-    from unittest import mock
     d = Path(tempfile.mkdtemp())
     with mock.patch.object(y, "LOCK", d / ".lock"), mock.patch.object(y, "_process", return_value="ran") as p:
-        assert process("u", {}) == "ran"
+        assert y.process("u", {}) == "ran"
         with mock.patch.object(y.fcntl, "flock", side_effect=[BlockingIOError, KeyboardInterrupt]):
-            assert process("u", {}).outcome == "cancelled"  # lock busy, then Ctrl-C while waiting
+            assert y.process("u", {}).outcome == "cancelled"  # lock busy, then Ctrl-C while waiting
     assert p.call_count == 1
 
 

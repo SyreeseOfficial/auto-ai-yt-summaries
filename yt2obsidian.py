@@ -7,11 +7,8 @@ import readline
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 import tomllib
-import urllib.error
-import urllib.request
 from collections import Counter, namedtuple
 from datetime import datetime
 from importlib.metadata import version
@@ -19,8 +16,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import yt_dlp
+from yt_dlp.networking.exceptions import HTTPError, RequestError, TransportError
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent
 LOG = HERE / "run.log"
 RETRY = HERE / "retry.txt"
 LOCK = HERE / ".lock"
@@ -54,7 +52,6 @@ HELP = """  <link>  save a transcript; several links (one per line or space-sepa
   q       quit"""
 SUMMARY = ("saved", "stub", "duplicate", "skipped", "failed", "stopped")
 LOG_AS = {"stopped": "failed", "invalid": "failed"}  # run.log keeps its old outcome names
-NET_RE = re.compile(r"unable to download|timed out|connection|resolution|network is unreachable|name or service", re.I)
 ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 BAD_CHARS = re.compile(r'[/\\:*?"<>|#^\[\]\x00-\x1f\x7f]')
@@ -73,8 +70,8 @@ class Quiet:
     info = warning = error = debug
 
 
-class Throttled(Exception):
-    """Throttled, bot-checked, or network down after retries: stop the run, queue the URL."""
+class Stop(Exception):
+    """Stop the run and queue the URL."""
     def __init__(self, msg, short=None):
         super().__init__(msg)
         self.short = short  # one-line version for the screen; the full text goes to run.log
@@ -175,18 +172,15 @@ def settings_menu():
         try:
             cfg = load_config()
             print(f"\nSettings  {HERE / 'config.toml'}\n  vault: {cfg['vault']}")
-            if (bad := unknown_keys(cfg)):
+            if bad := unknown_keys(cfg):
                 print(f"  warning: unknown keys ignored: {', '.join(bad)}")
             for i, k in enumerate(keys, 1):
                 label, _, allowed = SETTINGS[k]
                 print(f"  {i}. [{'x' if cfg[k] else ' '}] {label}" if allowed is bool else f"  {i}. {label}: {show_setting(k, cfg[k])}")
-            try:
-                pick = input("Number changes a setting, d resets, Enter goes back\nsettings> ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print()
+            pick = ask("Number changes a setting, d resets, Enter goes back\nsettings> ")
+            if pick is None or pick.lower() in ("", "q", "b"):
                 return
-            if pick in ("", "q", "b"):
-                return
+            pick = pick.lower()
             if pick == "d":
                 reset_settings()
                 print("settings reset to defaults (inbox kept)")
@@ -199,10 +193,8 @@ def settings_menu():
                     opts = list(allowed)
                     new = opts[(opts.index(cfg[k]) + 1) % len(opts)]
                 else:
-                    try:
-                        raw = input(f"{label} [{cfg[k]}], new value (Enter keeps it): ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        print()
+                    raw = ask(f"{label} [{cfg[k]}], new value (Enter keeps it): ")
+                    if raw is None:
                         return
                     if not raw:
                         continue
@@ -218,6 +210,14 @@ def settings_menu():
         except (ValueError, OSError) as e:
             print(f"Config problem: {cap(e)}")
             return
+
+
+def ask(prompt):
+    """Stripped input, or None on Ctrl-D / Ctrl-C."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
 
 
 def clean(s):
@@ -241,9 +241,9 @@ def at_terminal():
     return sys.stdin.isatty()
 
 
-def get_url(argv):
-    """argv[1] if given, else the clipboard (wl-paste)."""
-    return argv[1].strip() if len(argv) > 1 else clipboard()
+def get_url(args):
+    """args[0] if given, else the clipboard (wl-paste)."""
+    return args[0].strip() if args else clipboard()
 
 
 def clipboard():
@@ -254,68 +254,74 @@ def clipboard():
 
 
 def parse_url(s):
-    """Return (video_id, 'video'|'short'). Raises ValueError on anything else."""
-    u = urlparse(s.strip())
-    host = (u.hostname or "").lower()
+    """Return (video_id, is_short). Raises ValueError on anything else."""
+    u = urlparse(s)
+    host = u.hostname or ""
     if host not in HOSTS:
         raise ValueError(f"not a YouTube URL: {s[:60]!r}")
     parts = [p for p in u.path.split("/") if p]
-    kind, vid = "video", None
+    vid, short = None, False
     if host == "youtu.be":
         vid = parts[0] if parts else None
     elif parts[:1] == ["watch"]:
         vid = (parse_qs(u.query).get("v") or [None])[0]
-    elif parts[:1] in (["shorts"], ["live"], ["embed"], ["v"]) and len(parts) > 1:
-        vid = parts[1]
-        kind = "short" if parts[0] == "shorts" else "video"
+    elif parts[:1] in (["shorts"], ["live"], ["embed"]) and len(parts) > 1:
+        vid, short = parts[1], parts[0] == "shorts"
     if not vid or not ID_RE.fullmatch(vid):
         raise ValueError(f"no video id in URL: {s[:60]!r}")
-    return vid, kind
+    return vid, short
 
 
-def fetch(vid, cfg):
-    """Video info dict from yt-dlp (no download). Raises Throttled on 429 / bot check."""
-    opts = {"logger": Quiet(), "skip_download": True, "noplaylist": True, "socket_timeout": cfg["timeout"]}
+def watch_url(vid):
+    return f"https://www.youtube.com/watch?v={vid}"
+
+
+def fetch(vid, timeout):
+    """Video info dict from yt-dlp (no download). Raises Stop on 429 / bot check."""
+    opts = {"logger": Quiet(), "socket_timeout": timeout}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+            return ydl.extract_info(watch_url(vid), download=False)
     except yt_dlp.utils.DownloadError as e:
         if any(k in str(e).lower() for k in THROTTLE):
-            raise Throttled(str(e), "throttled by YouTube") from e
+            raise Stop(str(e), "throttled by YouTube") from e
         raise
 
 
-def with_retries(fn, cfg):
-    """Call fn, retrying network errors cfg['retries'] times. Exhausted -> Throttled; other errors pass through."""
-    for attempt in range(1, cfg["retries"] + 1):
+def transient(e):
+    """Timeouts, dropped connections and 5xx are worth retrying; a 4xx is final."""
+    if isinstance(e, yt_dlp.utils.DownloadError):  # yt-dlp keeps the original error here
+        e = e.exc_info[1] if e.exc_info else None
+    return e.status >= 500 if isinstance(e, HTTPError) else isinstance(e, TransportError)
+
+
+def with_retries(fn, retries):
+    """Call fn, retrying network errors up to `retries` attempts. Exhausted -> Stop; other errors pass through."""
+    for attempt in range(1, retries + 1):
         try:
             return fn()
-        except Throttled:
+        except Stop:
             raise
-        except (yt_dlp.utils.DownloadError, OSError) as e:
-            if isinstance(e, yt_dlp.utils.DownloadError):
-                net = bool(NET_RE.search(str(e)))
-            else:  # 4xx on a caption URL is final; timeouts, URLError and 5xx are worth retrying
-                net = not (isinstance(e, urllib.error.HTTPError) and e.code < 500)
-            if not net:
+        except (yt_dlp.utils.DownloadError, RequestError) as e:
+            if not transient(e):
                 raise
-            if attempt == cfg["retries"]:
-                raise Throttled(f"network failure after {attempt} tries: {e}", "network down or unreachable") from e
-            print(f"Retrying ({attempt + 1}/{cfg['retries']})...")
+            if attempt == retries:
+                raise Stop(f"network failure after {attempt} tries: {e}", "network down or unreachable") from e
+            print(f"Retrying ({attempt + 1}/{retries})...")
             time.sleep(RETRY_DELAY * attempt)
 
 
-def fetch_track(url, cfg):
+def fetch_track(url, timeout):
     """Download and parse a json3 caption track."""
-    try:
-        with urllib.request.urlopen(url, timeout=cfg["timeout"]) as r:
-            return json.load(r)
-    except ValueError as e:  # HTML error page, truncated body
-        raise ValueError(f"caption download was not valid JSON: {e}") from e
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            raise Throttled("HTTP 429 on caption download", "throttled by YouTube") from e
-        raise
+    with yt_dlp.YoutubeDL({"logger": Quiet(), "socket_timeout": timeout}) as ydl:
+        try:
+            return json.load(ydl.urlopen(url))
+        except ValueError as e:  # HTML error page, truncated body
+            raise ValueError(f"caption download was not valid JSON: {e}") from e
+        except HTTPError as e:
+            if e.status == 429:
+                raise Stop("HTTP 429 on caption download", "throttled by YouTube") from e
+            raise
 
 
 def pick_track(info):
@@ -336,13 +342,9 @@ def transcript_text(track):
     return re.sub(r"\s+", " ", " ".join(events)).strip()
 
 
-# yt-dlp behavior (checked Phase 2, yt-dlp 2026.08.19):
-#   live now        -> info returned, live_status == "is_live" (real: E4zB_LgD-T0)
-#   no captions     -> info returned, no English track        (real: 8plwv25NYRo)
-#   deleted/gone    -> DownloadError "This video is unavailable" (real: aaaaaaaaaaa)
-#   private/members/age/upcoming -> NOT reproduced live; matched on yt-dlp's documented messages
-#     ("Private video", "Join this channel", "Sign in to confirm your age", "Premieres in",
-#     "This live event will begin"). Tests use mocked strings.
+# yt-dlp 2026.08.19, real runs: live now -> info with live_status "is_live"; no captions -> info with no
+# English track; deleted ID -> DownloadError "This video is unavailable". Private, members-only, age-gated and
+# upcoming are not reproduced; matched on yt-dlp's documented messages, tests use mocked strings.
 def stub_reason(info, exc=None):
     """Why there is no transcript, in PRD wording."""
     msg = re.sub(r"^ERROR: (\[youtube\] \S+: )?", "", str(exc)) if exc else ""
@@ -371,7 +373,7 @@ def render(info, vid, text=None, reason=None):
     d = info.get("upload_date") or ""
     date = f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else "unknown"
     channel = info.get("channel") or info.get("uploader") or "unknown"
-    url = f"https://www.youtube.com/watch?v={vid}"
+    url = watch_url(vid)
     if text:
         label = re.sub(r"([*_])", r"\\\1", title.replace("[", "(").replace("]", ")"))
         return f"[{label}]({url})\nChannel: {channel}\nDate: {date}\n\n{text}\n"
@@ -381,7 +383,7 @@ def render(info, vid, text=None, reason=None):
 def find_existing(inbox, vid):
     """Path of a note for this video (matched on the URL in its first 1 KB), or None."""
     needle = f"youtube.com/watch?v={vid}"
-    for p in Path(inbox).glob("*.md"):
+    for p in inbox.glob("*.md"):
         with open(p, encoding="utf-8", errors="replace") as f:
             if needle in f.read(1024):
                 return p
@@ -395,24 +397,19 @@ def is_stub(path):
 
 
 def write_atomic(inbox, name, body):
-    """Write body to inbox/<name>.md via temp file + hard link. Never overwrites; numbers on clash."""
-    inbox = Path(inbox)
+    """Write body to inbox/<name>.md via a temp file + rename. Never overwrites; numbers on clash."""
     inbox.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".yt2obsidian-", suffix=".tmp")
+    tmp = inbox / ".yt2obsidian.tmp"  # ponytail: one temp name is safe because process() runs one save at a time
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-        os.chmod(tmp, 0o644)  # mkstemp makes it 0600
+        tmp.write_text(body, encoding="utf-8", newline="\n")
         for n in range(1, 100):
             dest = inbox / (f"{name}.md" if n == 1 else f"{name} ({n}).md")
-            try:
-                os.link(tmp, dest)  # atomic, fails if dest exists
+            if not dest.exists():
+                os.replace(tmp, dest)
                 return dest
-            except FileExistsError:
-                continue
         raise OSError(f"too many name clashes for {name!r}")
     finally:
-        os.unlink(tmp)
+        tmp.unlink(missing_ok=True)
 
 
 def notify(msg, urgent=False):
@@ -460,8 +457,9 @@ def read_retry():
 
 def queue_retry(url):
     try:
-        if url not in read_retry():
-            with open(RETRY, "a", encoding="utf-8") as f:
+        with open(RETRY, "a+", encoding="utf-8") as f:
+            f.seek(0)
+            if url not in f.read().split():
                 f.write(url + "\n")
     except OSError:
         pass
@@ -474,13 +472,12 @@ def toast(cfg, msg, repl=False, urgent=False):
         notify(msg, urgent)
 
 
-def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None):
-    """The one exit for every run but a save: print, log, toast. Typos typed at the prompt are not logged."""
+def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None, note=None):
+    """The one exit for every run: print, log, toast (`note` is the shorter toast text). Typos typed at the prompt are not logged."""
     print(msg)
     if not (repl and outcome == "invalid"):
         log_run(url, LOG_AS.get(outcome, outcome), err)
-    if code or outcome in ("duplicate", "skipped"):  # a hotkey press must never look like it did nothing
-        toast(cfg, msg.split("\n")[0], repl, urgent=bool(code))
+    toast(cfg, note or msg.split("\n")[0], repl, urgent=bool(code))
     return Result(code, outcome, path, title)
 
 
@@ -514,28 +511,28 @@ def _process(url, cfg, repl):
     try:
         inbox = vault / cfg["inbox"]
         try:
-            vid, kind = parse_url(url)
+            vid, short = parse_url(url)
         except ValueError as e:
             return fin("invalid", f"failed: {e}" + (" (? for help)" if repl else ""), 1, str(e))
-        if kind == "short":
+        if short:
             return fin("skipped", f"skipped: Shorts are not processed ({vid})")
-        if (old := find_existing(inbox, vid)):
+        if old := find_existing(inbox, vid):
             return fin("duplicate", f"duplicate: {rel(old, vault)}" + (" (stub, delete it to retry)" if is_stub(old) else ""),
                        path=old)
 
-        canonical = f"https://www.youtube.com/watch?v={vid}"
+        canonical = watch_url(vid)
         exc = None
         print("fetching...")
         try:
             try:
-                info = with_retries(lambda: fetch(vid, cfg), cfg)
+                info = with_retries(lambda: fetch(vid, cfg["timeout"]), cfg["retries"])
             except yt_dlp.utils.DownloadError as e:  # private, members-only...: stub
                 if "video is unavailable" in str(e).lower():  # deleted or mistyped ID: nothing to save
                     return fin("failed", f"failed: video unavailable ({vid})", 1, str(e))
                 info, exc = {}, e
             track = pick_track(info)
-            text = transcript_text(with_retries(lambda: fetch_track(track, cfg), cfg)) if track else None
-        except Throttled as e:
+            text = transcript_text(with_retries(lambda: fetch_track(track, cfg["timeout"]), cfg["retries"])) if track else None
+        except Stop as e:
             queue_retry(canonical)
             msg = f"stopped: {e.short or cap(e)}\nqueued in {RETRY.name}: {canonical}"
             return fin("stopped", msg + ("\nwait a while, then press r" if repl else ""), 2, str(e))
@@ -548,12 +545,10 @@ def _process(url, cfg, repl):
             f"stub ({time.monotonic() - t0:.1f}s): {shown}\n  {title}\n  no transcript: {cap(reason)}"
         if exc and re.search(r"unable to extract|nsig", str(exc), re.I):
             msg += "\n  hint: yt-dlp may be out of date; press u (update yt-dlp)"
-        print(msg)
-        log_run(url, "saved" if text else "stub", str(path) if text else f"{reason} | {path}")
-        toast(cfg, f"Saved: {cap(title, 80)}" if text else f"Stub: {cap(title, 80)} ({TOAST_REASON.get(reason, cap(reason, 60))})", repl)
         if cfg.get("open_obsidian", True):
             open_obsidian(vault, path)
-        return Result(0, "saved" if text else "stub", path, title)
+        return fin("saved" if text else "stub", msg, err=str(path) if text else f"{reason} | {path}", path=path, title=title,
+                   note=f"Saved: {cap(title, 80)}" if text else f"Stub: {cap(title, 80)} ({TOAST_REASON.get(reason, cap(reason, 60))})")
     except KeyboardInterrupt:
         print("cancelled")
         log_run(url, "cancelled")
@@ -582,7 +577,7 @@ def batch(text, cfg, repl=False):
             rest = urls[i + 1:]
             for u in rest:
                 try:
-                    queue_retry(f"https://www.youtube.com/watch?v={parse_url(u)[0]}")
+                    queue_retry(watch_url(parse_url(u)[0]))
                 except ValueError:
                     pass
             if rest:
@@ -605,14 +600,14 @@ def update_ytdlp():
     print(f"yt-dlp {old} -> {new}; quit and start again to use it" if new != old else f"yt-dlp {old} is already the latest")
 
 
-def main(argv=None, cfg=None, retry=False, **override):
-    """One-shot run: the URL in argv[1] or the clipboard, or the retry queue. Returns the exit code (see USAGE)."""
+def main(args=None, cfg=None, retry=False, **override):
+    """One-shot run: the URL in args[0] or the clipboard, or the retry queue. Returns the exit code (see USAGE)."""
     url = ""
     try:
         cfg = {**(cfg or load_config()), **override}
         if retry:
             return max((r.code for r in retry_queue(cfg, repl=False)), default=0)
-        url = get_url(argv if argv is not None else sys.argv)
+        url = get_url(sys.argv[1:] if args is None else args)
     except (ValueError, OSError, subprocess.SubprocessError) as e:  # bad config, empty clipboard, no wl-paste
         return finish(url, cfg, "failed", f"failed: {cap(e)}", 1, str(e)).code
     return max(r.code for r in batch(url, cfg))
@@ -641,7 +636,7 @@ def repl():
     try:
         cfg = load_config()
         print(f"yt2obsidian (yt-dlp {yt_dlp.version.__version__})\nvault: {cfg['vault']}\ninbox: {cfg['inbox']}")
-        if (bad := unknown_keys(cfg)):
+        if bad := unknown_keys(cfg):
             print(f"warning: unknown keys in config.toml ignored: {', '.join(bad)}")
     except ValueError as e:
         print(f"Config problem: {e}")
@@ -664,10 +659,8 @@ def repl():
 
     try:
         while True:
-            try:
-                line = input("> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
+            line = ask("> ")
+            if line is None:
                 break
             cmd = line.lower()
             if line.startswith("#"):
@@ -703,12 +696,7 @@ def repl():
                     print("nothing to undo")
                     continue
                 res = made[-1]
-                try:
-                    ok = input(f"delete {rel(res.path, cfg['vault'])}? [y/N] ").strip().lower() == "y"
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    ok = False
-                if ok:
+                if (ask(f"delete {rel(res.path, cfg['vault'])}? [y/N] ") or "").lower() == "y":
                     try:
                         res.path.unlink(missing_ok=True)
                     except OSError as e:
@@ -735,9 +723,9 @@ def repl():
             readline.write_history_file(HISTORY)
         except OSError:
             pass
-    if (parts := [f"{stats[k]} {k}" for k in SUMMARY if stats[k]]):
+    if parts := [f"{stats[k]} {k}" for k in SUMMARY if stats[k]]:
         print("session: " + ", ".join(parts))
-    if (n := len(read_retry())):
+    if n := len(read_retry()):
         print(f"{n} URL{'s' * (n != 1)} waiting in {RETRY.name} (r to retry)")
     return 0
 
@@ -759,7 +747,7 @@ def cli(args):
         print(USAGE, file=sys.stderr)
         return 1
     over = {**({"open_obsidian": False} if "--no-open" in flags else {}), **({"notify": "never"} if "--no-notify" in flags else {})}
-    return main([None, *rest], retry="--retry" in flags, **over)
+    return main(rest, retry="--retry" in flags, **over)
 
 
 if __name__ == "__main__":
