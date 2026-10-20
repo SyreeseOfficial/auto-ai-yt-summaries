@@ -42,6 +42,9 @@ def test_pick_track():
     assert pick_track({"subtitles": {"fr": t("fr")}, "automatic_captions": {"de": t("de")}}) is None
     assert pick_track({"subtitles": {"en": [{"ext": "vtt", "url": "x"}]}}) is None
     assert pick_track({}) is None
+    # auto "en" that is really a translation of another language is rejected
+    tr = [{"ext": "json3", "url": "https://x/timedtext?lang=ko&tlang=en"}]
+    assert pick_track({"automatic_captions": {"en": tr}}) is None
 
 
 def test_transcript_text():
