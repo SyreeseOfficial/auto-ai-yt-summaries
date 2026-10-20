@@ -37,6 +37,15 @@ def test_safe_name():
     assert y.safe_name("  .Title with  spaces. ", V) == "Title with spaces"
     long = y.safe_name("x" * 400, V)
     assert len((long + " (99).md").encode()) <= 255
+    assert y.safe_name("Caf\u00e9 \u2013 Don\u2019t Stop", V) == "Cafe - Don't Stop"  # accents folded, curly quotes and dashes mapped
+    assert y.safe_name("\ufb01nal", V) == "final"
+    assert y.safe_name("Rain Sound ... Meditation, Yoga,", V) == "Rain Sound ... Meditation, Yoga"  # trailing punctuation
+    assert y.safe_name("Tom & Jerry's (2)", V) == "Tom & Jerry's (2)"  # & ' () survive, a trailing (2) is harmless
+    assert y.safe_name("???", V) == f"video-{V}"  # reduces to nothing
+    assert y.safe_name("\u2026 ... ,", V) == f"video-{V}"
+    assert y.safe_name("\u65e5\u672c\u8a9e" * 134, V) == f"video-{V}"  # 400 CJK characters
+    assert y.safe_name("\u65e5\u672c\u8a9e", V, "Some Channel") == f"Some Channel video-{V}"
+    assert y.safe_name("", V, "\u65e5\u672c") == f"video-{V}"
 
 
 def test_pick_track():
@@ -98,6 +107,12 @@ def test_render():
         assert b"\r" not in y.write_atomic(Path(d), "T", "a\nb\n").read_bytes()
 
 
+def test_case_clash():
+    with tempfile.TemporaryDirectory() as d:
+        y.write_atomic(Path(d), "Title", "a")
+        assert y.write_atomic(Path(d), "title", "b").name == "title (2).md"  # phone sync may not tell them apart
+
+
 def test_write_path():
     with tempfile.TemporaryDirectory() as d:
         inbox = Path(d) / "deep" / "Inbox"  # created on demand
@@ -145,7 +160,7 @@ def test_main_saved_and_duplicate():
             "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
     track = {"events": [{"segs": [{"utf8": "hi there 日本語 café"}]}]}
     code, calls, d = run_main(f"https://youtu.be/{V}", info, track)
-    assert code == 0 and [p.name for p in notes(d)] == ["Hllo World.md"]
+    assert code == 0 and [p.name for p in notes(d)] == ["Hello World.md"]
     assert "hi there 日本語 café" in notes(d)[0].read_text() and "saved" in (d / "run.log").read_text()
     code, calls, _ = run_main(f"https://youtu.be/{V}", info, track, tmp=d)  # duplicate: no fetch, no new file
     assert code == 0 and calls["fetch"] == 0 and len(notes(d)) == 1

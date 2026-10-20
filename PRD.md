@@ -91,7 +91,7 @@ No thumbnail or attachment is saved.
 
 7.5 Filename
 The filename is the video title with characters Obsidian and common filesystems reject removed. Examples of characters to strip include the forward slash, backslash, colon, asterisk, question mark, double quote, angle brackets, and pipe.
-Emoji and non-English characters are removed from the filename.
+Accents are folded to plain letters (Café becomes Cafe), curly quotes and dashes become ASCII, and anything outside a short ASCII allowlist is removed. Trailing punctuation is stripped. A title with no usable characters becomes “<channel> video-<id>”.
 Spaces are kept.
 Full title length is not truncated for display, but filenames are capped to stay under the common 255-byte filesystem limit. The cap is the only length restriction.
 The filename ends in .md.

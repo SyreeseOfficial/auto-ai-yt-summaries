@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import unicodedata
 from collections import Counter, namedtuple
 from datetime import datetime
 from importlib.metadata import version
@@ -54,7 +55,8 @@ SUMMARY = ("saved", "stub", "duplicate", "skipped", "failed", "stopped")
 LOG_AS = {"stopped": "failed", "invalid": "failed"}  # run.log keeps its old outcome names
 ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
-BAD_CHARS = re.compile(r'[/\\:*?"<>|#^\[\]\x00-\x1f\x7f]')
+KEEP = re.compile(r"[^A-Za-z0-9 '(),.&!+=@$%~_-]")  # allowlist: everything else is dropped
+PUNCT = str.maketrans("\u2018\u2019\u201c\u201d\u2013\u2014", "''\"\"--")
 # 255-byte filesystem limit minus ".md" and a " (99)" collision suffix
 MAX_NAME = 255 - len(".md") - len(" (99)")
 
@@ -366,11 +368,12 @@ def stub_reason(info, exc=None):
     return f"no English captions (found: {', '.join(others[:5])})" if others else NO_CAPS
 
 
-def safe_name(title, vid):
-    """Filename stem: ASCII only, no forbidden chars, capped. Falls back to video-<id>."""
-    s = BAD_CHARS.sub("", (title or "").encode("ascii", "ignore").decode())
-    s = re.sub(r"\s+", " ", s).strip(" .")[:MAX_NAME].strip(" .")
-    return s or f"video-{vid}"
+def safe_name(title, vid, channel=""):
+    """Filename stem: accents folded, ASCII allowlist, capped. Falls back to <channel> video-<id>."""
+    def clean(t):
+        t = unicodedata.normalize("NFKD", (t or "").translate(PUNCT))
+        return re.sub(r"\s+", " ", KEEP.sub("", t)).strip(" .,;-_")[:MAX_NAME].strip(" .,;-_")
+    return clean(title) or clean(f"{channel or ''} video-{vid}")
 
 
 def render(info, vid, text=None, reason=None):
@@ -412,9 +415,10 @@ def write_atomic(inbox, name, body):
     tmp = inbox / ".yt2obsidian.tmp"  # ponytail: one temp name is safe because process() runs one save at a time
     try:
         tmp.write_text(body, encoding="utf-8", newline="\n")
+        taken = {p.name.lower() for p in inbox.iterdir()}  # case-folded: phone sync may not tell Title.md from title.md
         for n in range(1, 100):
             dest = inbox / (f"{name}.md" if n == 1 else f"{name} ({n}).md")
-            if not dest.exists():
+            if dest.name.lower() not in taken:
                 os.replace(tmp, dest)
                 return dest
         raise OSError(f"too many name clashes for {name!r}")
@@ -548,7 +552,7 @@ def _process(url, cfg, repl):
             return fin("stopped", msg + ("\nwait a while, then press r" if repl else ""), 2, str(e))
 
         reason = None if text else stub_reason(info, exc)
-        path = write_atomic(inbox, safe_name(info.get("title"), vid), render(info, vid, text, reason))
+        path = write_atomic(inbox, safe_name(info.get("title"), vid, info.get("channel") or info.get("uploader")), render(info, vid, text, reason))
         title = clean(info.get("title") or vid)
         shown = rel(path, vault)
         msg = f"saved ({time.monotonic() - t0:.1f}s): {shown}\n  {title}" if text else \

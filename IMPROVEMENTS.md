@@ -223,6 +223,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## H. Filenames
 
+**Status: done (13 of 18), 2026-10-20.** Done: #164, #165, #166 (one allowlist after NFKD; `BAD_CHARS` and the ASCII encode are gone), #169 and #175 (`strip(" .,;-_")`), #171 (fallback is `<channel> video-<id>`), #173 (clash check ignores case), tests #170, #176, #177, #178, #180. Not done: #167 and #172 (need a PRD change; say yes first), #168 and #181 (taste), #174 (you only sync to laptop and phone), #179 (`render` shows the bare ID as the link label, the filename uses the fallback; different purposes, left alone). PRD 7.5 updated.
+
 164. **[V][S]** **Fold accents first.** `safe_name("Café – Don’t Stop")` returns `'Caf Dont Stop'` (re-run today). Run `unicodedata.normalize("NFKD", t)` before the ASCII encode and `Café` becomes `Cafe`. Side effect: `ﬁ` becomes `fi`.
 165. **[S]** **Map curly quotes and dashes** (`’ “ ” – —`) to ASCII before stripping, so `Don’t` becomes `Don't`.
 166. **[S]** **Replace `BAD_CHARS` and the ASCII encode/decode** (:29, :189) with one allowlist after NFKD: `re.sub(r"[^A-Za-z0-9 '(),.&!+=@$%~_-]", "", s)`. No 25-character denylist to keep complete.
