@@ -401,11 +401,11 @@ def render(info, vid, text=None, reason=None):
 
 
 def find_existing(inbox, vid):
-    """Path of a note for this video (matched on the URL in its first 1 KB), or None."""
-    needle = f"youtube.com/watch?v={vid}"
-    for p in inbox.glob("*.md"):
+    """Path of a note for this video (its ID in a watch or youtu.be link in the first 1 KB; subfolders count), or None."""
+    needle = re.compile(rf"(?:watch\?v=|youtu\.be/){re.escape(vid)}")
+    for p in inbox.rglob("*.md"):
         with open(p, encoding="utf-8", errors="replace") as f:
-            if needle in f.read(1024):
+            if needle.search(f.read(1024)):
                 return p
     return None
 
@@ -542,7 +542,7 @@ def _process(url, cfg, repl):
         url = canonical = watch_url(vid)  # logged and queued without tracking params
         if old := find_existing(inbox, vid):
             return fin("duplicate", f"duplicate: {rel(old, vault)}" + (" (stub, delete it to retry)" if is_stub(old) else ""),
-                       path=old)
+                       err=str(old), path=old)
 
         exc = None
         print("fetching...")

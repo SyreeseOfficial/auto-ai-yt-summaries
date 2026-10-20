@@ -124,6 +124,33 @@ def test_case_clash():
         assert y.write_atomic(Path(d), "title", "b").name == "title (2).md"  # phone sync may not tell them apart
 
 
+def test_find_existing_variants():
+    link = f"[T](https://www.youtube.com/watch?v={V})\nChannel: C\n"
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "bom.md").write_bytes(b"\xef\xbb\xbf" + link.replace("\n", "\r\n").encode())  # BOM + CRLF, as Windows editors save
+        (d / "bad.md").write_bytes(b"\xff\xfe junk\n" + link.replace(V, "AAAAAAAAAAA").encode())
+        (d / "short").mkdir()
+        (d / "short" / "retyped.md").write_text(f"see https://youtu.be/{V}\n")  # moved to a subfolder, link retyped
+        assert y.find_existing(d, V) == d / "bom.md"  # BOM and CRLF do not hide the link
+        (d / "bom.md").unlink()
+        assert y.find_existing(d, V) == d / "short" / "retyped.md"  # subfolders and youtu.be links count
+        assert y.find_existing(d, "AAAAAAAAAAA") == d / "bad.md"  # invalid bytes in the note do not break the scan
+        assert y.find_existing(d, "BBBBBBBBBBB") is None
+        (d / "h.md").write_text("# Heading\n" + link.replace(V, "CCCCCCCCCCC"))
+        assert y.find_existing(d, "CCCCCCCCCCC") == d / "h.md"  # first line is not a link
+        (d / "crlf.md").write_bytes(y.render({"title": "T"}, V, None, y.NO_CAPS).replace("\n", "\r\n").encode())
+        assert y.is_stub(d / "crlf.md")
+
+
+def test_write_failures():
+    with tempfile.TemporaryDirectory() as d:
+        inbox = Path(d) / "I"
+        with mock.patch.object(Path, "write_text", side_effect=OSError("No space left on device")):  # disk full mid-write
+            assert raises_os(y.write_atomic, inbox, "T", "x")
+        assert list(inbox.iterdir()) == []
+
+
 def test_write_path():
     with tempfile.TemporaryDirectory() as d:
         inbox = Path(d) / "deep" / "Inbox"  # created on demand
@@ -175,9 +202,26 @@ def test_main_saved_and_duplicate():
     assert "hi there 日本語 café" in notes(d)[0].read_text() and "saved" in (d / "run.log").read_text()
     code, calls, _ = run_main(f"https://youtu.be/{V}", info, track, tmp=d)  # duplicate: no fetch, no new file
     assert code == 0 and calls["fetch"] == 0 and len(notes(d)) == 1
-    assert "duplicate" in (d / "run.log").read_text()
+    dup = [r.split("\t") for r in (d / "run.log").read_text().splitlines() if "\tduplicate\t" in r]
+    assert dup and dup[0][3] == str(notes(d)[0])  # the row names the existing note
     run_main(f"https://youtu.be/{V}?si=track&t=9", info, track, tmp=d)  # log keeps the canonical URL, not the tracking params
     assert "si=track" not in (d / "run.log").read_text()
+
+
+def test_read_only_inbox():
+    d = Path(tempfile.mkdtemp())
+    (d / "vault" / "Inbox").mkdir(parents=True)
+    (d / "vault" / "Inbox").chmod(0o500)
+    try:
+        info = {"title": "T", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, _, _ = run_main(f"https://youtu.be/{V}", info, {"events": [{"segs": [{"utf8": "hi"}]}]}, tmp=d)
+        if (d / "vault" / "Inbox" / "T.md").exists():  # running as root: permissions do not apply
+            return
+        assert code == 1 and "failed: [Errno 13] Permission denied" in out.getvalue() and "Traceback" not in out.getvalue()
+    finally:
+        (d / "vault" / "Inbox").chmod(0o700)
 
 
 def test_main_short_and_garbage():

@@ -97,7 +97,7 @@ Full title length is not truncated for display, but filenames are capped to stay
 The filename ends in .md.
 If a file with the same name already exists and belongs to a different video, append a number, for example “Title (2).md.”
 7.6 Duplicate Handling
-Before writing, check whether a note for the same video already exists in the target folder. Determine this by the video ID recorded in the note’s URL.
+Before writing, check whether a note for the same video already exists in the target folder or any subfolder of it. Determine this by the video ID recorded in the note’s URL (a `watch?v=` or `youtu.be/` link in the first 1 KB).
 If a duplicate exists, skip writing and report that the video was already saved. Do not overwrite.
 Existing notes are never overwritten under any circumstances.
 7.7 Output Location

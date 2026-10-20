@@ -282,6 +282,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## K. Dedupe and write path
 
+**Status: done (9 of 13), 2026-10-20.** Already done in earlier sections: #208 (no hard links since E #128). Done now: #211 (`duplicate` rows in `run.log` hold the existing note's path), #212 (`find_existing` searches subfolders of the inbox, so a note you filed into a subfolder still dedupes), #219 (matches the video ID in a `watch?v=` or `youtu.be/` link, so a retyped link still dedupes), tests #215 (BOM, CRLF, a note starting with a heading), #216 (invalid bytes), #217 (read-only inbox gives `failed: [Errno 13] Permission denied: ...`), #218 (disk full leaves no temp file), #220 (already covered by the duplicate test). Not done: #209 (the temp file must sit on the same filesystem as the note for `os.replace`, and it is a dotfile), #210 (not measured; fine at hundreds of notes), #213 (a note moved or deleted *outside* the inbox is still re-saved; treating `run.log` as "seen" would stop you re-saving a note you deleted on purpose, so it needs your call; same as A #18), #214 (needs a PRD OK).
+
 208. **[S]** **Hard links fail on exFAT/FAT/some network mounts** with `OSError` (:229). If the vault ever lives there, every write fails. Fall back to `os.replace`, or simplify (see Remove).
 209. **[S]** **The temp file `.yt2obsidian-*.tmp`** (:221) briefly sits in the vault. Obsidian ignores dotfiles, but Sync may upload it. Write the temp file outside the vault if on the same filesystem.
 210. **[S]** **`find_existing` opens every note** on every run (:210). Fine at hundreds; measure at thousands before fixing.
