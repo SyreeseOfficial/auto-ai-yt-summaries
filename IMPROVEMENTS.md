@@ -246,6 +246,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## I. URL parsing
 
+**Status: done (12 of 14), 2026-10-20.** Done: #182 (`youtube-nocookie.com`), #183 (scheme-less), #184 (wrapping `<>()[]"'` and trailing `.,;!?` stripped), #185 (already worked through `urls_in`; test added), #186, #190, #194 (tests), #187, #188, #191 (clear messages for playlist, clip, channel/handle URLs), #193 (`run.log` and `retry.txt` get the canonical `watch?v=` URL). Not done: #189 (bare IDs, optional), #192 (Shorts message already names the ID; the batch prints `[n/N]`), #195 (skip).
+
 182. **[V][S]** **Add `youtube-nocookie.com`** (embed links; currently rejected). Two lines in `HOSTS`.
 183. **[S]** **Accept scheme-less pastes** (`youtu.be/ID`, `youtube.com/watch?v=ID`). `urlparse` gives no hostname, so they are rejected. Prepend `https://` when there is no `://`.
 184. **[S]** **Strip wrapping characters** (`<url>`, `"url"`, `'url'`, trailing `.` or `,`). The log has a case where a trailing period came along.

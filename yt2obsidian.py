@@ -54,7 +54,11 @@ HELP = """  <link>  save a transcript; several links (one per line or space-sepa
 SUMMARY = ("saved", "stub", "duplicate", "skipped", "failed", "stopped")
 LOG_AS = {"stopped": "failed", "invalid": "failed"}  # run.log keeps its old outcome names
 ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
-HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
+         "youtube-nocookie.com", "www.youtube-nocookie.com"}
+NOT_VIDEO = {"playlist": "playlists are not supported", "clip": "clip links are not supported",
+             "channel": "that is a channel, paste a video link", "c": "that is a channel, paste a video link",
+             "user": "that is a channel, paste a video link"}
 KEEP = re.compile(r"[^A-Za-z0-9 '(),.&!+=@$%~_-]")  # allowlist: everything else is dropped
 PUNCT = str.maketrans("\u2018\u2019\u201c\u201d\u2013\u2014", "''\"\"--")
 # 255-byte filesystem limit minus ".md" and a " (99)" collision suffix
@@ -257,7 +261,8 @@ def clipboard():
 
 def parse_url(s):
     """Return (video_id, is_short). Raises ValueError on anything else."""
-    u = urlparse(s)
+    t = s.strip().strip("<>()[]\"'").rstrip(".,;!?")  # pasted from chat: wrapped, trailing punctuation
+    u = urlparse(t if "://" in t else "https://" + t)
     host = u.hostname or ""
     if host not in HOSTS:
         raise ValueError(f"not a YouTube URL: {s[:60]!r}")
@@ -265,6 +270,8 @@ def parse_url(s):
     vid, short = None, False
     if host == "youtu.be":
         vid = parts[0] if parts else None
+    elif parts and (parts[0].startswith("@") or parts[0] in NOT_VIDEO):
+        raise ValueError(NOT_VIDEO.get(parts[0], NOT_VIDEO["channel"]))
     elif parts[:1] == ["watch"]:
         vid = (parse_qs(u.query).get("v") or [None])[0]
     elif parts[:1] in (["shorts"], ["live"], ["embed"], ["v"]) and len(parts) > 1:
@@ -534,7 +541,7 @@ def _process(url, cfg, repl):
             return fin("duplicate", f"duplicate: {rel(old, vault)}" + (" (stub, delete it to retry)" if is_stub(old) else ""),
                        path=old)
 
-        canonical = watch_url(vid)
+        url = canonical = watch_url(vid)  # logged and queued without tracking params
         exc = None
         print("fetching...")
         try:

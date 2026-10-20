@@ -25,6 +25,17 @@ def test_parse_url():
               f"https://www.youtube.com/embed/{V}", f"https://www.youtube.com/v/{V}"):
         assert y.parse_url(u) == (V, False), u
     assert y.parse_url(f"https://www.youtube.com/shorts/{V}") == (V, True)
+    for u in (f"https://www.youtube-nocookie.com/embed/{V}", f"youtu.be/{V}", f"youtube.com/watch?v={V}",
+              f"<https://youtu.be/{V}>", f'"https://youtu.be/{V}"', f"'https://youtu.be/{V}'", f"https://youtu.be/{V}.",
+              f"https://youtu.be/{V},", f"(https://youtu.be/{V})", f"https://www.youtube.com/live/{V}",
+              f"https://www.youtube.com/watch?v={V}&list=PLabc&index=2&pp=xyz", f"https://youtu.be/{V}\n"):
+        assert y.parse_url(u) == (V, False), u
+    for u, word in ((f"https://www.youtube.com/playlist?list=PLabc", "playlist"), (f"https://youtube.com/clip/Ugkx{V}", "clip"),
+                    ("https://www.youtube.com/@name", "channel"), ("https://www.youtube.com/channel/UCabc", "channel"),
+                    ("https://www.youtube.com/c/name", "channel"), ("https://www.youtube.com/user/name", "channel")):
+        assert word in err_of(lambda: y.parse_url(u)), u
+    assert raises(y.parse_url, f"https://youtu.be/{V}extra")
+    assert y.urls_in(f"Check this https://youtu.be/{V} it is good") == [f"https://youtu.be/{V}"]
     for u in ("hello", "https://example.com/watch?v=" + V, "https://www.youtube.com/watch",
               "https://www.youtube.com/watch?v=short", "https://www.youtube.com/@channel", ""):
         assert raises(y.parse_url, u), u
@@ -165,6 +176,8 @@ def test_main_saved_and_duplicate():
     code, calls, _ = run_main(f"https://youtu.be/{V}", info, track, tmp=d)  # duplicate: no fetch, no new file
     assert code == 0 and calls["fetch"] == 0 and len(notes(d)) == 1
     assert "duplicate" in (d / "run.log").read_text()
+    run_main(f"https://youtu.be/{V}?si=track&t=9", info, track, tmp=d)  # log keeps the canonical URL, not the tracking params
+    assert "si=track" not in (d / "run.log").read_text()
 
 
 def test_main_short_and_garbage():
