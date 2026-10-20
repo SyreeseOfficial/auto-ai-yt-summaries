@@ -3,3 +3,4 @@ config.toml
 run.log
 retry.txt
 __pycache__/
+.history

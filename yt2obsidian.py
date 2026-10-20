@@ -2,6 +2,8 @@
 import json
 import os
 import re
+import readline
+import signal
 import subprocess
 import sys
 import tempfile
@@ -9,6 +11,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
+from collections import Counter, namedtuple
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -18,6 +21,7 @@ import yt_dlp
 HERE = Path(__file__).parent
 LOG = HERE / "run.log"
 RETRY = HERE / "retry.txt"
+HISTORY = HERE / ".history"
 RETRY_DELAY = 2  # seconds, times attempt number
 TOGGLES = {  # config key -> menu label, all default on
     "open_obsidian": "Open the note in Obsidian after saving",
@@ -25,8 +29,17 @@ TOGGLES = {  # config key -> menu label, all default on
 }
 THROTTLE = ("http error 429", "not a bot", "rate-limited", "try again later")
 USAGE = """usage: yt2obsidian.py [URL]   save a transcript (no URL: read the clipboard)
-       yt2obsidian.py -i       interactive prompt (or run ./yt)
+       yt2obsidian.py -i       interactive prompt (or run ./yt; ./yt URL saves one link)
        yt2obsidian.py -h       this help"""
+HELP = """  <link>  save a transcript (Enter alone: use the clipboard)
+  o       open the last saved note in Obsidian
+  l       list the last 5 saved notes
+  r       retry the links waiting in retry.txt
+  s       settings
+  ?       this help
+  q       quit"""
+SUMMARY = ("saved", "stub", "duplicate", "skipped", "failed", "stopped")
+LOG_AS = {"stopped": "failed", "invalid": "failed"}  # run.log keeps its old outcome names
 NET_RE = re.compile(r"unable to download|timed out|connection|resolution|network is unreachable|name or service", re.I)
 ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
@@ -47,6 +60,12 @@ class Quiet:
 
 class Throttled(Exception):
     """Throttled, bot-checked, or network down after retries: stop the run, queue the URL."""
+    def __init__(self, msg, short=None):
+        super().__init__(msg)
+        self.short = short  # one-line version for the screen; the full text goes to run.log
+
+
+Result = namedtuple("Result", "code outcome path title", defaults=(None, None))
 
 
 def load_config():
@@ -99,10 +118,33 @@ def settings_menu():
             set_toggle(keys[int(pick) - 1], not cfg[keys[int(pick) - 1]])
 
 
+def clean(s):
+    """One line, no control characters (titles and yt-dlp errors can carry escape sequences)."""
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f]+", " ", str(s)).strip()
+
+
+def cap(s, n=200):
+    s = clean(s)
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def rel(path, vault):
+    try:
+        return str(Path(path).relative_to(vault))
+    except ValueError:
+        return str(path)
+
+
+def at_terminal():
+    return sys.stdin.isatty()
+
+
 def get_url(argv):
     """argv[1] if given, else the clipboard (wl-paste)."""
-    if len(argv) > 1:
-        return argv[1].strip()
+    return argv[1].strip() if len(argv) > 1 else clipboard()
+
+
+def clipboard():
     r = subprocess.run(["wl-paste", "--no-newline"], capture_output=True, text=True, timeout=5)
     if r.returncode or not r.stdout.strip():
         raise ValueError("clipboard is empty or not text")
@@ -114,7 +156,7 @@ def parse_url(s):
     u = urlparse(s.strip())
     host = (u.hostname or "").lower()
     if host not in HOSTS:
-        raise ValueError(f"not a YouTube URL: {s!r}")
+        raise ValueError(f"not a YouTube URL: {s[:60]!r}")
     parts = [p for p in u.path.split("/") if p]
     kind, vid = "video", None
     if host == "youtu.be":
@@ -125,7 +167,7 @@ def parse_url(s):
         vid = parts[1]
         kind = "short" if parts[0] == "shorts" else "video"
     if not vid or not ID_RE.fullmatch(vid):
-        raise ValueError(f"no video id in URL: {s!r}")
+        raise ValueError(f"no video id in URL: {s[:60]!r}")
     return vid, kind
 
 
@@ -137,7 +179,7 @@ def fetch(vid, cfg):
             return ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
     except yt_dlp.utils.DownloadError as e:
         if any(k in str(e).lower() for k in THROTTLE):
-            raise Throttled(str(e)) from e
+            raise Throttled(str(e), "throttled by YouTube") from e
         raise
 
 
@@ -156,7 +198,7 @@ def with_retries(fn, cfg):
             if not net:
                 raise
             if attempt == cfg["retries"]:
-                raise Throttled(f"network failure after {attempt} tries: {e}") from e
+                raise Throttled(f"network failure after {attempt} tries: {e}", "network down or unreachable") from e
             print(f"Retrying ({attempt + 1}/{cfg['retries']})...")
             time.sleep(RETRY_DELAY * attempt)
 
@@ -170,7 +212,7 @@ def fetch_track(url, cfg):
         raise ValueError(f"caption download was not valid JSON: {e}") from e
     except urllib.error.HTTPError as e:
         if e.code == 429:
-            raise Throttled("HTTP 429 on caption download") from e
+            raise Throttled("HTTP 429 on caption download", "throttled by YouTube") from e
         raise
 
 
@@ -296,100 +338,217 @@ def log_run(url, outcome, err=""):
         pass  # a full disk must not hide the run's real outcome
 
 
+def recent_saves(n=5):
+    """Last n (time, note path) pairs from run.log. Saved rows hold the path; stub rows 'reason | path'."""
+    try:
+        rows = [r.split("\t") for r in LOG.read_text(encoding="utf-8").splitlines()]
+    except OSError:
+        return []
+    return [(r[0], r[3].rsplit(" | ", 1)[-1]) for r in rows if len(r) > 3 and r[3] and r[2] in ("saved", "stub")]  # old rows have no path[-n:]
+
+
+def read_retry():
+    try:
+        return RETRY.read_text(encoding="utf-8").split()
+    except OSError:
+        return []
+
+
 def queue_retry(url):
     try:
-        seen = RETRY.read_text().split() if RETRY.exists() else []
-        if url not in seen:
-            with open(RETRY, "a") as f:
+        if url not in read_retry():
+            with open(RETRY, "a", encoding="utf-8") as f:
                 f.write(url + "\n")
     except OSError:
         pass
 
 
-def main(argv=None, cfg=None):
-    url = ""
+def toast(cfg, msg, repl=False):
+    """Desktop notification, only for hotkey runs: with a terminal attached you are already looking at it."""
+    if (cfg or {}).get("notify", True) and not repl and not at_terminal():
+        notify(msg)
 
-    def ping(msg):
-        if (cfg or {}).get("notify", True):
-            notify(msg)
 
-    def done(outcome, msg, code=0, err=""):
-        print(msg)
-        log_run(url, outcome, err)
-        if code:
-            ping(msg)
-        return code
+def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None):
+    """The one exit for every run but a save: print, log, toast. Typos typed at the prompt are not logged."""
+    print(msg)
+    if not (repl and outcome == "invalid"):
+        log_run(url, LOG_AS.get(outcome, outcome), err)
+    if code:
+        toast(cfg, msg, repl)
+    return Result(code, outcome, path, title)
+
+
+def process(url, cfg, repl=False):
+    """Save one URL. Prints the outcome, logs it, returns a Result; never raises."""
+    t0 = time.monotonic()
+    vault = cfg["vault"]
+
+    def fin(outcome, msg, code=0, err="", **kw):
+        return finish(url, cfg, outcome, msg, code, err, repl, **kw)
 
     try:
-        cfg = cfg or load_config()
-        inbox = cfg["vault"] / cfg["inbox"]
-        url = get_url(argv if argv is not None else sys.argv)
-        vid, kind = parse_url(url)
+        inbox = vault / cfg["inbox"]
+        try:
+            vid, kind = parse_url(url)
+        except ValueError as e:
+            return fin("invalid", f"failed: {e}" + (" (? for help)" if repl else ""), 1, str(e))
         if kind == "short":
-            return done("skipped", f"Skipped: Shorts are not processed ({vid})")
+            return fin("skipped", f"skipped: Shorts are not processed ({vid})")
         if (old := find_existing(inbox, vid)):
-            return done("duplicate", f"Already saved: {old}" + (" (stub, delete it to retry)" if is_stub(old) else ""))
+            return fin("duplicate", f"duplicate: {rel(old, vault)}" + (" (stub, delete it to retry)" if is_stub(old) else ""),
+                       path=old)
 
         canonical = f"https://www.youtube.com/watch?v={vid}"
         exc = None
+        print("fetching...")
         try:
             try:
                 info = with_retries(lambda: fetch(vid, cfg), cfg)
             except yt_dlp.utils.DownloadError as e:  # private, members-only...: stub
                 if "video is unavailable" in str(e).lower():  # deleted or mistyped ID: nothing to save
-                    return done("failed", f"Error: video unavailable ({vid})", 1, str(e))
+                    return fin("failed", f"failed: video unavailable ({vid})", 1, str(e))
                 info, exc = {}, e
             track = pick_track(info)
             text = transcript_text(with_retries(lambda: fetch_track(track, cfg), cfg)) if track else None
         except Throttled as e:
             queue_retry(canonical)
-            return done("failed", f"Stopped: {e}\nQueued in {RETRY.name}: {canonical}", 2, str(e))
+            msg = f"stopped: {e.short or cap(e)}\nqueued in {RETRY.name}: {canonical}"
+            return fin("stopped", msg + ("\nwait a while, then press r" if repl else ""), 2, str(e))
 
         reason = None if text else stub_reason(info, exc)
         path = write_atomic(inbox, safe_name(info.get("title"), vid), render(info, vid, text, reason))
-        msg = f"Saved: {path}" if text else f"Saved stub ({reason}): {path}"
+        title = clean(info.get("title") or vid)
+        shown = rel(path, vault)
+        msg = f"saved ({time.monotonic() - t0:.1f}s): {shown}\n  {title}" if text else \
+            f"stub ({time.monotonic() - t0:.1f}s): {shown}\n  {title}\n  no transcript: {cap(reason)}"
+        if exc and re.search(r"unable to extract|nsig", str(exc), re.I):
+            msg += "\n  hint: yt-dlp may be out of date; run: .venv/bin/pip install -U yt-dlp"
         print(msg)
-        log_run(url, "saved" if text else "stub", reason or "")
-        ping(f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"))
+        log_run(url, "saved" if text else "stub", str(path) if text else f"{reason} | {path}")
+        toast(cfg, f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"), repl)
         if cfg.get("open_obsidian", True):
-            open_obsidian(cfg["vault"], path)
-        return 0
+            open_obsidian(vault, path)
+        return Result(0, "saved" if text else "stub", path, title)
     except KeyboardInterrupt:
-        print("Cancelled")
+        print("cancelled")
         log_run(url, "cancelled")
-        return 1
-    except (ValueError, OSError, subprocess.SubprocessError) as e:  # bad input, config, disk, clipboard
-        return done("failed", f"Error: {e}", 1, str(e))
+        return Result(1, "cancelled")
+    except (ValueError, OSError) as e:  # config, disk
+        return fin("failed", f"failed: {cap(e)}", 1, str(e))
     except Exception as e:  # anything else must still end in a log row, not a traceback
-        return done("failed", f"Error: {type(e).__name__}: {e}", 1, f"{type(e).__name__}: {e}")
+        return fin("failed", f"failed: {type(e).__name__}: {cap(e)}", 1, f"{type(e).__name__}: {e}")
+
+
+def main(argv=None, cfg=None):
+    url = ""
+    try:
+        cfg = cfg or load_config()
+        url = get_url(argv if argv is not None else sys.argv)
+    except (ValueError, OSError, subprocess.SubprocessError) as e:  # bad config, empty clipboard, no wl-paste
+        return finish(url, cfg, "failed", f"failed: {cap(e)}", 1, str(e)).code
+    return process(url, cfg).code
+
+
+def retry_queue(cfg):
+    """Re-run every URL in retry.txt; keep the ones still waiting. Stops at the first throttle."""
+    urls, results, left = read_retry(), [], []
+    if not urls:
+        print("retry.txt is empty")
+    for i, u in enumerate(urls):
+        results.append(process(u, cfg, repl=True))
+        if results[-1].outcome in ("stopped", "cancelled"):
+            left = urls[i:]
+            break
+    if urls:
+        try:
+            RETRY.write_text("".join(u + "\n" for u in left), encoding="utf-8")
+        except OSError:
+            pass
+    return results
 
 
 def repl():
     """Paste a link, press Enter, repeat. Ctrl-D, Ctrl-C or 'q' quits."""
-    print("Paste a YouTube link and press Enter (s = settings, q = quit)")
     try:
-        load_config()
+        cfg = load_config()
+        print(f"yt2obsidian (yt-dlp {yt_dlp.version.__version__})\nvault: {cfg['vault']}\ninbox: {cfg['inbox']}")
     except ValueError as e:
         print(f"Config problem: {e}")
-    while True:
-        try:
-            line = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-        if line in ("q", "quit", "exit"):
-            return 0
-        if line in ("s", "settings"):
+    print("Paste a YouTube link and press Enter (? = help, q = quit)")
+    readline.set_auto_history(False)  # only real links go in the history, not typos or pasted secrets
+    try:
+        readline.read_history_file(HISTORY)
+    except OSError:
+        pass
+    readline.set_history_length(200)
+    stats, last = Counter(), None
+    try:
+        while True:
             try:
-                settings_menu()
+                line = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            cmd = line.lower()
+            if line.startswith("#"):
+                continue
+            if cmd in ("q", "quit", "exit"):
+                break
+            if cmd in ("?", "h", "help"):
+                print(HELP)
+                continue
+            if cmd == "l":
+                for when, path in recent_saves():
+                    print(f"  {when}  {path}")
+                continue
+            try:
+                cfg = load_config()
             except ValueError as e:
                 print(f"Config problem: {e}")
-        elif line:
-            main(["", line])
+                continue
+            if cmd in ("s", "settings"):
+                try:
+                    settings_menu()
+                except ValueError as e:
+                    print(f"Config problem: {e}")
+            elif cmd == "o":
+                target = last or (recent_saves(1) or [(0, None)])[0][1]
+                print(f"opening {rel(target, cfg['vault'])}" if target else "nothing saved yet")
+                if target:
+                    open_obsidian(cfg["vault"], target)
+            elif cmd == "r":
+                for res in retry_queue(cfg):
+                    stats[res.outcome] += 1
+                    last = res.path or last
+            else:
+                try:
+                    url = line or clipboard()  # Enter alone pastes for you
+                except (ValueError, OSError, subprocess.SubprocessError) as e:
+                    print(f"failed: {cap(e)}")
+                    continue
+                res = process(url, cfg, repl=True)
+                if res.outcome != "invalid":
+                    stats[res.outcome] += 1
+                    last = res.path or last
+                    if line:
+                        readline.add_history(line)
+    finally:
+        try:
+            readline.write_history_file(HISTORY)
+        except OSError:
+            pass
+    if (parts := [f"{stats[k]} {k}" for k in SUMMARY if stats[k]]):
+        print("session: " + ", ".join(parts))
+    if (n := len(read_retry())):
+        print(f"{n} URL{'s' * (n != 1)} waiting in {RETRY.name} (r to retry)")
+    return 0
 
 
 def cli(args):
     if args == ["-i"]:
+        for sig in (signal.SIGTERM, signal.SIGHUP):  # closing the terminal mid-save still cleans up the temp file
+            signal.signal(sig, lambda *_: sys.exit(1))
         return repl()
     if args[:1] in (["-h"], ["--help"]):
         print(USAGE)

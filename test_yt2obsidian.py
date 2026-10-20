@@ -114,7 +114,7 @@ def run_main(url, fetch=None, track=None, tmp=None):
         return fetch
 
     with mock.patch.multiple(y, fetch=fake_fetch, fetch_track=lambda u, c: track, RETRY_DELAY=0,
-                             LOG=d / "run.log", RETRY=d / "retry.txt",
+                             LOG=d / "run.log", RETRY=d / "retry.txt", at_terminal=lambda: False,
                              notify=calls["notify"].append, open_obsidian=lambda *a: None):
         code = main([None, url], cfg)
     return code, calls, d
@@ -274,6 +274,95 @@ def test_cli():
     with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9):
         assert cli([]) == 7 and cli(["-i"]) == 9 and cli(["-h"]) == 0 and cli(["--help"]) == 0
         assert cli(["-i", "https://youtu.be/x"]) == 1 and cli(["--bogus"]) == 1
+
+
+def run_repl(lines, info=None, track=None, retry=None):
+    """Drive repl() with scripted input against a tmp vault. Returns (output, tmp Path, opened paths)."""
+    import contextlib, io, tempfile
+    from pathlib import Path
+    from unittest import mock
+    d = Path(tempfile.mkdtemp())
+    (d / "vault").mkdir()
+    (d / "config.toml").write_text(f'vault = "{d}/vault"\ninbox = "Inbox"\n')
+    if retry:
+        (d / "retry.txt").write_text(retry)
+    opened, out = [], io.StringIO()
+    feed = iter(lines)
+
+    def fake_input(prompt=""):
+        try:
+            return next(feed)
+        except StopIteration:
+            raise EOFError
+
+    fake = info if isinstance(info, BaseException) else None
+    with mock.patch.multiple(y, HERE=d, LOG=d / "run.log", RETRY=d / "retry.txt", HISTORY=d / ".history",
+                             fetch=lambda v, c: (_ for _ in ()).throw(fake) if fake else (info or {}),
+                             fetch_track=lambda u, c: track, RETRY_DELAY=0, at_terminal=lambda: False,
+                             notify=lambda m: opened.append(("toast", m)),
+                             open_obsidian=lambda v, p: opened.append(("open", p)),
+                             clipboard=lambda: "https://youtu.be/" + V), \
+            mock.patch("builtins.input", fake_input), contextlib.redirect_stdout(out):
+        assert repl() == 0
+    return out.getvalue(), d, opened
+
+
+def test_repl():
+    info = {"title": "Cafe \x1b[31mTitle", "channel": "C", "upload_date": "20200101",
+            "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    out, d, opened = run_repl(["", "garbage", "# note", "?", f"https://youtu.be/{V}", "l", "o", "q"], info, track)
+    # Enter alone pastes the clipboard; the second paste of the same video is a duplicate
+    assert "saved (" in out and "Inbox/Cafe" in out and "duplicate: Inbox/" in out and "\x1b" not in out
+    assert "fetching..." in out and "vault:" in out and "inbox: Inbox" in out and "yt-dlp" in out
+    assert "failed: not a YouTube URL: 'garbage' (? for help)" in out and "<link>" in out
+    assert "session: 1 saved, 1 duplicate" in out and "failed" not in out.split("session:")[1]
+    # typos and comments are not logged; no toasts at a prompt; `l` and `o` find the note
+    log = (d / "run.log").read_text()
+    assert "garbage" not in log and "# note" not in log and log.count("\n") == 2
+    assert not [o for o in opened if o[0] == "toast"] and [o for o in opened if o[0] == "open"]
+    assert str(notes(d)[0]) in out  # `l` lists it; `o` opens it
+    assert ("open", notes(d)[0]) in opened
+    # only real links reach the history file
+    hist = (d / ".history").read_text()
+    assert f"https://youtu.be/{V}" in hist and "garbage" not in hist and "# note" not in hist
+
+
+def test_repl_survives_errors():
+    out, d, _ = run_repl([f"https://youtu.be/{V}", "q"], KeyError("boom"))
+    assert "failed: KeyError" in out and "session: 1 failed" in out
+    out, d, _ = run_repl([f"https://youtu.be/{V}", "q"], KeyboardInterrupt())
+    assert "cancelled" in out and "session" not in out
+
+
+def test_repl_throttle_and_retry():
+    out, d, _ = run_repl([f"https://youtu.be/{V}", "q"], y.Throttled("429", "throttled by YouTube"))
+    assert "stopped: throttled by YouTube" in out and "press r" in out
+    assert "1 URL waiting in retry.txt (r to retry)" in out and "1 stopped" in out
+    assert (d / "retry.txt").read_text() == f"https://www.youtube.com/watch?v={V}\n"
+    # `r`: the saved link leaves the queue; a throttle stops the run and keeps the rest
+    info = {"title": "T", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    out, d, _ = run_repl(["r", "q"], info, track, retry=f"https://youtu.be/{V}\n")
+    assert "saved (" in out and (d / "retry.txt").read_text() == "" and "waiting" not in out
+    two = f"https://youtu.be/{V}\nhttps://youtu.be/AAAAAAAAAAA\n"
+    out, d, _ = run_repl(["r", "q"], y.Throttled("429"), retry=two)
+    assert out.count("stopped:") == 1 and (d / "retry.txt").read_text() == two
+    out, d, _ = run_repl(["r", "q"])
+    assert "retry.txt is empty" in out
+
+
+def test_clean_cap_rel():
+    assert clean("a\x1b[31m\n b\t") == "a [31m b" and cap("x" * 300).endswith("…") and len(cap("x" * 300)) == 200
+    assert rel("/v/Inbox/a.md", "/v") == "Inbox/a.md" and rel("/elsewhere/a.md", "/v") == "/elsewhere/a.md"
+    assert len(err_of(lambda: parse_url("x" * 500))) < 100
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "run.log").write_text("t1\tu\tsaved\t\nt2\tu\tstub\tno captions | /v/a.md\nt3\tu\tsaved\t/v/b.md\nt4\tu\tfailed\tx\n")
+        with mock.patch.object(y, "LOG", Path(d) / "run.log"):
+            assert recent_saves() == [("t2", "/v/a.md"), ("t3", "/v/b.md")]
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 #!/bin/sh
-# Interactive mode: paste links one at a time.
+# ./yt        interactive prompt: paste links one at a time
+# ./yt URL    save one link (any other yt2obsidian.py argument works too)
 d=$(dirname "$(readlink -f "$0")")
-exec "$d/.venv/bin/python" "$d/yt2obsidian.py" -i
+[ $# -eq 0 ] && set -- -i
+exec "$d/.venv/bin/python" "$d/yt2obsidian.py" "$@"

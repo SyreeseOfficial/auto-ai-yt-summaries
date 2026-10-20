@@ -60,6 +60,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## B. Interactive mode (`./yt`)
 
+**Status: done (31 of 39), 2026-10-20.** Not done: #43, #54, #60, #65 (need a PRD decision); #44 (only matters with #43); #47, #59, #67 (taste, skipped). #41 shows the note path from `run.log`, not the real title (log rows do not hold titles yet, see #233). #42 is the `r` command; the `--retry` flag (#92) is still open. #51 vs #68: Enter on an empty line reads the clipboard, comment lines (`# ...`) are ignored. #55 prints a `pip install -U yt-dlp` hint, since `u` (#54) was not built. #62 is in the README.
+
 31. **[S]** **Don't log typos.** `run.log` already holds `garbage` and a pasted shell command as `failed` rows. In the REPL, print parse failures and skip `log_run`.
 32. **[S]** **No toasts while a terminal is attached.** Failures call `notify` (:276) while you are looking at the prompt. Toast only when `sys.stdin` is not a tty (hotkey runs).
 33. **[S]** **Print `fetching...` before the network call.** A first run takes 1-2 s with no output.

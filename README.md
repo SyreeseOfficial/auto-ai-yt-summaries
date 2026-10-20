@@ -10,6 +10,8 @@ cp config.example.toml config.toml        # set vault + inbox
 .venv/bin/python test_yt2obsidian.py      # tests
 ```
 
+Interactive prompt: `./yt` (paste links one at a time; `?` lists commands: `o` open last note, `l` list recent, `r` retry `retry.txt`, `s` settings, `q` quit). `./yt <url>` saves one link. Put it on your PATH: `ln -s "$PWD/yt" ~/.local/bin/yt`.
+
 Hyprland keybind: `bind = SUPER, Y, exec, <path>/.venv/bin/python <path>/yt2obsidian.py`
 
 - Logs every run to `run.log`; throttled/network-failed URLs go to `retry.txt`.
