@@ -5,12 +5,21 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
+import yt_dlp
+
+HERE = Path(__file__).parent
+LOG = HERE / "run.log"
+RETRY = HERE / "retry.txt"
+RETRY_DELAY = 2  # seconds, times attempt number
+NET_RE = re.compile(r"unable to download|timed out|connection|resolution|network is unreachable|name or service", re.I)
 ID_RE = re.compile(r"[\w-]{11}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 BAD_CHARS = re.compile(r'[/\\:*?"<>|#^\[\]\x00-\x1f\x7f]')
@@ -23,12 +32,12 @@ NO_CAPS = "no captions available"
 
 
 class Throttled(Exception):
-    """YouTube rate-limited or bot-checked us; stop the run."""
+    """Throttled, bot-checked, or network down after retries: stop the run, queue the URL."""
 
 
 def load_config():
     """config.toml next to this script, with defaults applied."""
-    with open(Path(__file__).with_name("config.toml"), "rb") as f:
+    with open(HERE / "config.toml", "rb") as f:
         cfg = {"timeout": 30, "retries": 3, **tomllib.load(f)}
     cfg["vault"] = Path(cfg["vault"]).expanduser()
     return cfg
@@ -66,16 +75,31 @@ def parse_url(s):
 
 def fetch(vid, cfg):
     """Video info dict from yt-dlp (no download). Raises Throttled on 429 / bot check."""
-    import yt_dlp
     opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
             "socket_timeout": cfg["timeout"]}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
     except yt_dlp.utils.DownloadError as e:
-        if "429" in str(e) or "not a bot" in str(e):
+        if "HTTP Error 429" in str(e) or "not a bot" in str(e):
             raise Throttled(str(e)) from e
         raise
+
+
+def with_retries(fn, cfg):
+    """Call fn, retrying network errors cfg['retries'] times. Exhausted -> Throttled; other errors pass through."""
+    for attempt in range(1, cfg["retries"] + 1):
+        try:
+            return fn()
+        except Throttled:
+            raise
+        except (yt_dlp.utils.DownloadError, OSError) as e:
+            net = bool(NET_RE.search(str(e))) if isinstance(e, yt_dlp.utils.DownloadError) else True
+            if not net:
+                raise
+            if attempt == cfg["retries"]:
+                raise Throttled(f"network failure after {attempt} tries: {e}") from e
+            time.sleep(RETRY_DELAY * attempt)
 
 
 def fetch_track(url, cfg):
@@ -116,7 +140,7 @@ def transcript_text(track):
 #     "This live event will begin"). Tests use mocked strings.
 def stub_reason(info, exc=None):
     """Why there is no transcript, in PRD wording."""
-    msg = str(exc).lower() if exc else ""
+    msg = re.sub(r"^ERROR: (\[youtube\] \S+: )?", "", str(exc)).lower() if exc else ""
     if info.get("live_status") in ("is_live", "is_upcoming") or "premieres in" in msg or "live event will begin" in msg:
         return LIVE
     if (info.get("availability") in ("private", "subscriber_only", "premium_only", "needs_auth")
@@ -124,7 +148,7 @@ def stub_reason(info, exc=None):
             or any(k in msg for k in ("private video", "members-only", "join this channel", "age-restricted", "your age"))):
         return RESTRICTED
     if exc:
-        return f"transcript fetch failed: {exc}"
+        return f"transcript fetch failed: {msg}"
     return NO_CAPS
 
 
@@ -192,26 +216,58 @@ def open_obsidian(vault, path):
     subprocess.Popen(["xdg-open", uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def main():
-    cfg = load_config()
+def log_run(url, outcome, err=""):
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().isoformat(timespec='seconds')}\t{url}\t{outcome}\t{err}\n")
+
+
+def queue_retry(url):
+    seen = RETRY.read_text().split() if RETRY.exists() else []
+    if url not in seen:
+        with open(RETRY, "a") as f:
+            f.write(url + "\n")
+
+
+def main(argv=None, cfg=None):
+    cfg = cfg or load_config()
     inbox = cfg["vault"] / cfg["inbox"]
+    url = ""
+
+    def done(outcome, msg, code=0, err=""):
+        print(msg)
+        log_run(url, outcome, err)
+        if code:
+            notify(msg)
+        return code
+
     try:
-        vid, kind = parse_url(get_url(sys.argv))
-    except ValueError as e:
-        print(e)
-        return 1
+        url = get_url(argv if argv is not None else sys.argv)
+        vid, kind = parse_url(url)
+    except (ValueError, subprocess.SubprocessError) as e:
+        return done("failed", f"Error: {e}", 1, str(e))
     if kind == "short":
-        print(f"Skipped: Shorts are not processed ({vid})")
-        return 0
+        return done("skipped", f"Skipped: Shorts are not processed ({vid})")
     if (old := find_existing(inbox, vid)):
-        print(f"Already saved: {old}")
-        return 0
-    info = fetch(vid, cfg)
-    track = pick_track(info)
-    text = transcript_text(fetch_track(track, cfg)) if track else None
-    reason = None if text else stub_reason(info)
+        return done("duplicate", f"Already saved: {old}")
+
+    canonical = f"https://www.youtube.com/watch?v={vid}"
+    exc = None
+    try:
+        try:
+            info = with_retries(lambda: fetch(vid, cfg), cfg)
+        except yt_dlp.utils.DownloadError as e:  # private, members-only, unavailable...: stub
+            info, exc = {}, e
+        track = pick_track(info)
+        text = transcript_text(with_retries(lambda: fetch_track(track, cfg), cfg)) if track else None
+    except Throttled as e:
+        queue_retry(canonical)
+        return done("failed", f"Stopped: {e}\nQueued in {RETRY.name}: {canonical}", 2, str(e))
+
+    reason = None if text else stub_reason(info, exc)
     path = write_atomic(inbox, safe_name(info.get("title"), vid), render(info, vid, text, reason))
-    print(path)
+    msg = f"Saved: {path}" if text else f"Saved stub ({reason}): {path}"
+    print(msg)
+    log_run(url, "saved" if text else "stub", reason or "")
     notify(f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"))
     open_obsidian(cfg["vault"], path)
     return 0

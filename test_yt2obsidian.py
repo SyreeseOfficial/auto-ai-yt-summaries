@@ -98,6 +98,78 @@ def test_write_path():
         assert sorted(p.name for p in inbox.iterdir()) == ["Title (2).md", "Title.md"]
 
 
+def run_main(url, fetch=None, track=None, tmp=None):
+    """Run main() against a tmp vault with network/UI stubbed. Returns (code, calls, tmp Path)."""
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    d = Path(tmp or tempfile.mkdtemp())
+    cfg = {"vault": d / "vault", "inbox": "Inbox", "timeout": 1, "retries": 3}
+    calls = {"fetch": 0, "notify": []}
+
+    def fake_fetch(vid, cfg):
+        calls["fetch"] += 1
+        if isinstance(fetch, Exception):
+            raise fetch
+        return fetch
+
+    with mock.patch.multiple(y, fetch=fake_fetch, fetch_track=lambda u, c: track, RETRY_DELAY=0,
+                             LOG=d / "run.log", RETRY=d / "retry.txt",
+                             notify=calls["notify"].append, open_obsidian=lambda *a: None):
+        code = main([None, url], cfg)
+    return code, calls, d
+
+
+def notes(d):
+    return sorted((d / "vault" / "Inbox").glob("*.md"))
+
+
+def test_main_saved_and_duplicate():
+    info = {"title": "Héllo 🔥 日本 World", "channel": "C", "upload_date": "20200101",
+            "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi there"}]}]}
+    code, calls, d = run_main(f"https://youtu.be/{V}", info, track)
+    assert code == 0 and [p.name for p in notes(d)] == ["Hllo World.md"]
+    assert "hi there" in notes(d)[0].read_text() and "saved" in (d / "run.log").read_text()
+    code, calls, _ = run_main(f"https://youtu.be/{V}", info, track, tmp=d)  # duplicate: no fetch, no new file
+    assert code == 0 and calls["fetch"] == 0 and len(notes(d)) == 1
+    assert "duplicate" in (d / "run.log").read_text()
+
+
+def test_main_short_and_garbage():
+    code, calls, d = run_main(f"https://youtube.com/shorts/{V}")
+    assert code == 0 and calls["fetch"] == 0 and notes(d) == [] and "skipped" in (d / "run.log").read_text()
+    code, calls, d = run_main("not a url")
+    assert code == 1 and calls["notify"]
+
+
+def test_main_stubs():
+    # no captions, live, and mocked private / members / age-restricted / premiere errors all give stubs, no retry
+    base = {"title": "T", "channel": "C", "upload_date": "20200101"}
+    cases = [(base, y.NO_CAPS), ({**base, "live_status": "is_live"}, y.LIVE)]
+    for msg, want in (("ERROR: [youtube] x: Private video. Sign in if you've been granted access", y.RESTRICTED),
+                      ("ERROR: [youtube] x: Join this channel to get access to members-only content", y.RESTRICTED),
+                      ("ERROR: [youtube] x: Sign in to confirm your age", y.RESTRICTED),
+                      ("ERROR: [youtube] x: Premieres in 3 hours", y.LIVE)):
+        cases.append((y.yt_dlp.utils.DownloadError(msg), want))
+    for fetch, want in cases:
+        code, calls, d = run_main(f"https://youtu.be/{V}", fetch)
+        assert code == 0 and calls["fetch"] == 1, want
+        body = notes(d)[0].read_text()
+        assert f"No transcript: {want}" in body, (want, body)
+        assert not (d / "retry.txt").exists()
+    assert notes(d)[0].name == f"video-{V}.md"  # no title available
+
+
+def test_main_throttle_and_timeout():
+    for exc, tries in ((y.Throttled("429"), 1), (TimeoutError("timed out"), 3),
+                       (y.yt_dlp.utils.DownloadError("ERROR: Unable to download webpage: timed out"), 3)):
+        code, calls, d = run_main(f"https://youtu.be/{V}?t=5", exc)
+        assert code == 2 and calls["fetch"] == tries, exc
+        assert (d / "retry.txt").read_text() == f"https://www.youtube.com/watch?v={V}\n"
+        assert "\tfailed\t" in (d / "run.log").read_text() and calls["notify"] and notes(d) == []
+
+
 if __name__ == "__main__":
     for name, f in list(globals().items()):
         if name.startswith("test_"):
