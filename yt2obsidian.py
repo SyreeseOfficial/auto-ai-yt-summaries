@@ -378,12 +378,16 @@ def render(info, vid, text=None, reason=None):
     title = info.get("title") or vid
     d = info.get("upload_date") or ""
     date = f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else "unknown"
-    channel = info.get("channel") or info.get("uploader") or "unknown"
+    meta = f"Channel: {info.get('channel') or info.get('uploader') or 'unknown'}\nDate: {date}\n"
+    if secs := info.get("duration"):  # live and upcoming videos have none
+        h, m = divmod(int(secs) // 60, 60)
+        meta += f"Duration: {f'{h}:{m:02}' if h else m}:{int(secs) % 60:02}\n"
+    meta += f"Saved: {datetime.now():%Y-%m-%d}\n"
     url = watch_url(vid)
     if text:
         label = re.sub(r"([*_])", r"\\\1", title.replace("[", "(").replace("]", ")"))
-        return f"[{label}]({url})\nChannel: {channel}\nDate: {date}\n\n{text}\n"
-    return f"[YouTube]({url})\nTitle: {info.get('title') or 'unknown'}\nChannel: {channel}\nDate: {date}\n\nNo transcript: {reason or NO_CAPS}\n"
+        return f"[{label}]({url})\n{meta}\n{text}\n"
+    return f"[YouTube]({url})\nTitle: {info.get('title') or 'unknown'}\n{meta}\nNo transcript: {reason or NO_CAPS}\n"
 
 
 def find_existing(inbox, vid):

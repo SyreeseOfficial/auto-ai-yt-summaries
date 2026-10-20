@@ -81,9 +81,13 @@ def test_stub_reason():
 
 
 def test_render():
-    info = {"title": "My [Video]", "channel": "Chan", "upload_date": "20240131"}
+    info = {"title": "My [Video]", "channel": "Chan", "upload_date": "20240131", "duration": 213}
     note = y.render(info, V, "the text")
-    assert note == f"[My (Video)](https://www.youtube.com/watch?v={V})\nChannel: Chan\nDate: 2024-01-31\n\nthe text\n"
+    today = y.datetime.now().strftime("%Y-%m-%d")
+    assert note == (f"[My (Video)](https://www.youtube.com/watch?v={V})\nChannel: Chan\nDate: 2024-01-31\n"
+                    f"Duration: 3:33\nSaved: {today}\n\nthe text\n")
+    assert "Duration: 1:02:03\n" in y.render({"duration": 3723}, V, "t") and "Duration" not in y.render({}, V, "t")
+    assert "Duration: 0:09\n" in y.render({"duration": 9}, V, "t")
     assert not note.startswith(("#", "---"))
     stub = y.render(info, V, None, y.NO_CAPS)
     assert "Title: My [Video]" in stub and "Channel: Chan" in stub and "No transcript: no captions available" in stub

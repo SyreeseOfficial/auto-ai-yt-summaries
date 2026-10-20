@@ -73,7 +73,9 @@ The note body is in this order:
 
 The YouTube URL as a markdown link. The link text is the video title or a short label, and the target is the full YouTube URL.
 A line with the channel name.
-A line with the date.
+A line with the upload date.
+A `Duration:` line (h:mm:ss or m:ss), left out when YouTube gives none (live, upcoming).
+A `Saved:` line with the date the note was written.
 The full transcript as plain text.
 
 The note has no YAML frontmatter block. It has no H1 heading. The video title is only in the filename.
