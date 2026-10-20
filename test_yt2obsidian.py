@@ -271,7 +271,8 @@ def err_of(f):
 
 def test_cli():
     from unittest import mock
-    with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9):
+    with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9), \
+            mock.patch.object(y, "at_terminal", return_value=False):
         assert cli([]) == 7 and cli(["-i"]) == 9 and cli(["-h"]) == 0 and cli(["--help"]) == 0
         assert cli(["-i", "https://youtu.be/x"]) == 1 and cli(["--bogus"]) == 1
 
@@ -352,6 +353,45 @@ def test_repl_throttle_and_retry():
     assert "retry.txt is empty" in out
 
 
+def test_batch_and_undo():
+    ids = ["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC"]
+    assert urls_in("a\nhttps://youtu.be/x https://youtu.be/y\n") == ["https://youtu.be/x", "https://youtu.be/y"]
+    assert urls_in("garbage in here") == ["garbage in here"] and urls_in(" one ") == ["one"]
+    info = {"title": "T", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    # a pasted list: each link saved in turn (same title -> numbered names), then undo deletes the last, with a prompt
+    out, d, _ = run_repl(["\n".join(f"https://youtu.be/{i}" for i in ids[:2]), "undo", "y", "undo", "n", "q"], info, track)
+    assert "[1/2]" in out and "[2/2]" in out and "deleted" in out and "session: 1 saved" in out
+    assert [p.name for p in notes(d)] == ["T.md"]  # the clash copy was the one undone
+    out, d, _ = run_repl(["undo", "q"])
+    assert "nothing to undo" in out
+    # a throttle on the first link queues the untried ones, in canonical form, and stops
+    out, d, _ = run_repl([" ".join(f"https://youtu.be/{i}?t=5" for i in ids), "q"], y.Throttled("429"))
+    assert out.count("stopped:") == 1 and "queued the other 2" in out
+    assert (d / "retry.txt").read_text().split() == [f"https://www.youtube.com/watch?v={i}" for i in ids]
+
+
+def test_update_and_default_mode():
+    import contextlib, io
+    from unittest import mock
+    out = io.StringIO()
+    run = lambda rc: mock.Mock(returncode=rc, stdout="", stderr="no network")
+    with contextlib.redirect_stdout(out):
+        with mock.patch.object(y.subprocess, "run", return_value=run(1)):
+            update_ytdlp()
+        with mock.patch.object(y.subprocess, "run", return_value=run(0)):
+            update_ytdlp()
+        with mock.patch.object(y.subprocess, "run", side_effect=KeyboardInterrupt):
+            update_ytdlp()
+    assert "update failed: no network" in out.getvalue() and "already the latest" in out.getvalue()
+    assert "update failed: cancelled" in out.getvalue()
+    with mock.patch.object(y, "main", return_value=7), mock.patch.object(y, "repl", return_value=9):
+        with mock.patch.object(y, "at_terminal", return_value=True), mock.patch.object(y.signal, "signal"):
+            assert cli([]) == 9  # a terminal with no argument gets the prompt
+        with mock.patch.object(y, "at_terminal", return_value=False):
+            assert cli([]) == 7  # the hotkey has no terminal: clipboard mode
+
+
 def test_clean_cap_rel():
     assert clean("a\x1b[31m\n b\t") == "a [31m b" and cap("x" * 300).endswith("…") and len(cap("x" * 300)) == 200
     assert rel("/v/Inbox/a.md", "/v") == "Inbox/a.md" and rel("/elsewhere/a.md", "/v") == "/elsewhere/a.md"
@@ -360,9 +400,15 @@ def test_clean_cap_rel():
     from pathlib import Path
     from unittest import mock
     with tempfile.TemporaryDirectory() as d:
-        (Path(d) / "run.log").write_text("t1\tu\tsaved\t\nt2\tu\tstub\tno captions | /v/a.md\nt3\tu\tsaved\t/v/b.md\nt4\tu\tfailed\tx\n")
+        a, b, gone = (str(Path(d) / n) for n in ("a.md", "b.md", "gone.md"))
+        for n in (a, b):
+            Path(n).write_text("x")
+        rows = [f"t1\tu\tsaved\t", f"t2\tu\tstub\tno captions | {a}", f"t3\tu\tsaved\t{b}", f"t4\tu\tsaved\t{gone}",
+                "t5\tu\tfailed\tx"]
+        (Path(d) / "run.log").write_text("\n".join(rows) + "\n")
         with mock.patch.object(y, "LOG", Path(d) / "run.log"):
-            assert recent_saves() == [("t2", "/v/a.md"), ("t3", "/v/b.md")]
+            assert recent_saves() == [("t2", a), ("t3", b)]  # old row, deleted note, failure: all left out
+            assert recent_saves(1) == [("t3", b)]
 
 
 if __name__ == "__main__":

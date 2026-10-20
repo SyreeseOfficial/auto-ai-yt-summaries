@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from collections import Counter, namedtuple
 from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -28,13 +29,16 @@ TOGGLES = {  # config key -> menu label, all default on
     "notify": "Desktop notifications",
 }
 THROTTLE = ("http error 429", "not a bot", "rate-limited", "try again later")
-USAGE = """usage: yt2obsidian.py [URL]   save a transcript (no URL: read the clipboard)
+USAGE = """usage: yt2obsidian.py [URL]   save a transcript (no URL: prompt in a terminal, else read the clipboard)
        yt2obsidian.py -i       interactive prompt (or run ./yt; ./yt URL saves one link)
        yt2obsidian.py -h       this help"""
-HELP = """  <link>  save a transcript (Enter alone: use the clipboard)
+HELP = """  <link>  save a transcript; several links (one per line or space-separated) are saved in turn
+          Enter alone: use the clipboard
   o       open the last saved note in Obsidian
   l       list the last 5 saved notes
   r       retry the links waiting in retry.txt
+  undo    delete the note saved last in this session
+  u       update yt-dlp
   s       settings
   ?       this help
   q       quit"""
@@ -344,7 +348,8 @@ def recent_saves(n=5):
         rows = [r.split("\t") for r in LOG.read_text(encoding="utf-8").splitlines()]
     except OSError:
         return []
-    return [(r[0], r[3].rsplit(" | ", 1)[-1]) for r in rows if len(r) > 3 and r[3] and r[2] in ("saved", "stub")]  # old rows have no path[-n:]
+    saves = [(r[0], r[3].rsplit(" | ", 1)[-1]) for r in rows if len(r) > 3 and r[3] and r[2] in ("saved", "stub")]
+    return [(when, path) for when, path in saves if Path(path).exists()][-n:]  # old rows have no path; undone notes are gone
 
 
 def read_retry():
@@ -423,7 +428,7 @@ def process(url, cfg, repl=False):
         msg = f"saved ({time.monotonic() - t0:.1f}s): {shown}\n  {title}" if text else \
             f"stub ({time.monotonic() - t0:.1f}s): {shown}\n  {title}\n  no transcript: {cap(reason)}"
         if exc and re.search(r"unable to extract|nsig", str(exc), re.I):
-            msg += "\n  hint: yt-dlp may be out of date; run: .venv/bin/pip install -U yt-dlp"
+            msg += "\n  hint: yt-dlp may be out of date; press u (update yt-dlp)"
         print(msg)
         log_run(url, "saved" if text else "stub", str(path) if text else f"{reason} | {path}")
         toast(cfg, f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"), repl)
@@ -440,6 +445,47 @@ def process(url, cfg, repl=False):
         return fin("failed", f"failed: {type(e).__name__}: {cap(e)}", 1, f"{type(e).__name__}: {e}")
 
 
+def urls_in(text):
+    """Links in pasted text, one per line or space-separated. Anything else comes back whole, so the error names it."""
+    toks = text.split()
+    links = [t for t in toks if "youtu" in t.lower()]
+    return links if links and len(toks) > 1 else [text.strip()]
+
+
+def batch(text, cfg, repl=False):
+    """process() each link in text. A throttle or Ctrl-C stops the run; links not yet tried go to retry.txt."""
+    urls, results = urls_in(text), []
+    for i, u in enumerate(urls):
+        if len(urls) > 1:
+            print(f"[{i + 1}/{len(urls)}]")
+        results.append(process(u, cfg, repl))
+        if results[-1].outcome in ("stopped", "cancelled"):
+            rest = urls[i + 1:]
+            for u in rest:
+                try:
+                    queue_retry(f"https://www.youtube.com/watch?v={parse_url(u)[0]}")
+                except ValueError:
+                    pass
+            if rest:
+                print(f"queued the other {len(rest)} in {RETRY.name}")
+            break
+    return results
+
+
+def update_ytdlp():
+    """pip install -U yt-dlp into the running Python's environment."""
+    old = version("yt-dlp")
+    try:
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"], capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError, KeyboardInterrupt) as e:
+        print(f"update failed: {cap(e) or 'cancelled'}")
+        return
+    if r.returncode:
+        return print(f"update failed: {cap(r.stderr or r.stdout)}")
+    new = version("yt-dlp")
+    print(f"yt-dlp {old} -> {new}; quit and start again to use it" if new != old else f"yt-dlp {old} is already the latest")
+
+
 def main(argv=None, cfg=None):
     url = ""
     try:
@@ -447,7 +493,7 @@ def main(argv=None, cfg=None):
         url = get_url(argv if argv is not None else sys.argv)
     except (ValueError, OSError, subprocess.SubprocessError) as e:  # bad config, empty clipboard, no wl-paste
         return finish(url, cfg, "failed", f"failed: {cap(e)}", 1, str(e)).code
-    return process(url, cfg).code
+    return max(r.code for r in batch(url, cfg))
 
 
 def retry_queue(cfg):
@@ -482,7 +528,16 @@ def repl():
     except OSError:
         pass
     readline.set_history_length(200)
-    stats, last = Counter(), None
+    stats, last, made = Counter(), None, []
+
+    def count(res):
+        nonlocal last
+        if res.outcome != "invalid":  # typos are not part of the session
+            stats[res.outcome] += 1
+            last = res.path or last
+            if res.outcome in ("saved", "stub"):
+                made.append(res)
+
     try:
         while True:
             try:
@@ -519,20 +574,41 @@ def repl():
                     open_obsidian(cfg["vault"], target)
             elif cmd == "r":
                 for res in retry_queue(cfg):
-                    stats[res.outcome] += 1
-                    last = res.path or last
+                    count(res)
+            elif cmd == "u":
+                update_ytdlp()
+            elif cmd == "undo":
+                if not made:
+                    print("nothing to undo")
+                    continue
+                res = made[-1]
+                try:
+                    ok = input(f"delete {rel(res.path, cfg['vault'])}? [y/N] ").strip().lower() == "y"
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    ok = False
+                if ok:
+                    try:
+                        res.path.unlink(missing_ok=True)
+                    except OSError as e:
+                        print(f"failed: {cap(e)}")
+                        continue
+                    made.pop()
+                    stats[res.outcome] -= 1
+                    last = last if last != res.path else None
+                    log_run(res.path, "undone")
+                    print("deleted")
             else:
                 try:
                     url = line or clipboard()  # Enter alone pastes for you
                 except (ValueError, OSError, subprocess.SubprocessError) as e:
                     print(f"failed: {cap(e)}")
                     continue
-                res = process(url, cfg, repl=True)
-                if res.outcome != "invalid":
-                    stats[res.outcome] += 1
-                    last = res.path or last
-                    if line:
-                        readline.add_history(line)
+                results = batch(url, cfg, repl=True)
+                for res in results:
+                    count(res)
+                if line and any(res.outcome != "invalid" for res in results):
+                    readline.add_history(line)
     finally:
         try:
             readline.write_history_file(HISTORY)
@@ -546,7 +622,7 @@ def repl():
 
 
 def cli(args):
-    if args == ["-i"]:
+    if args == ["-i"] or (not args and at_terminal()):  # no terminal = hotkey: read the clipboard
         for sig in (signal.SIGTERM, signal.SIGHUP):  # closing the terminal mid-save still cleans up the temp file
             signal.signal(sig, lambda *_: sys.exit(1))
         return repl()
