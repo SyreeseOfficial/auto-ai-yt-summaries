@@ -537,11 +537,11 @@ def _process(url, cfg, repl):
             return fin("invalid", f"failed: {e}" + (" (? for help)" if repl else ""), 1, str(e))
         if short:
             return fin("skipped", f"skipped: Shorts are not processed ({vid})")
+        url = canonical = watch_url(vid)  # logged and queued without tracking params
         if old := find_existing(inbox, vid):
             return fin("duplicate", f"duplicate: {rel(old, vault)}" + (" (stub, delete it to retry)" if is_stub(old) else ""),
                        path=old)
 
-        url = canonical = watch_url(vid)  # logged and queued without tracking params
         exc = None
         print("fetching...")
         try:
