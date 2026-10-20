@@ -210,6 +210,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## G. Note format
 
+**Status: done (4 of 8), 2026-10-20.** Done: #158 (a stub with no title says `Title: unknown`), #161 (already `No transcript: <reason>`; no change), #162 and #163 (tests; `write_atomic` already writes `\n`). Not done, need your OK because they change the note format (PRD 7.4): #156 (`Captions:`), #157 (`Duration:`), #160 (`Saved:`), #159 (chapter headings, same group as the skipped paragraph items).
+
 156. **[PRD][S]** **`Captions: manual|auto` line.** Tells you how much to trust the text. Needs `track_kind` from above.
 157. **[PRD][S]** **`Duration:` line.** `info["duration"]` exists (213 for the test video).
 158. **[S]** **Stub `Title:` shows the raw ID** when yt-dlp has no title. Print `unknown` (moot after junk stubs are removed).

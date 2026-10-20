@@ -88,6 +88,10 @@ def test_render():
     stub = y.render(info, V, None, y.NO_CAPS)
     assert "Title: My [Video]" in stub and "Channel: Chan" in stub and "No transcript: no captions available" in stub
     assert "unknown" in y.render({}, V, "t")
+    assert f"Title: unknown\n" in y.render({}, V, None) and V not in y.render({}, V, None).split("\n")[1]  # stub never shows the raw ID as title
+    assert "Date: unknown" in y.render({"title": "T", "upload_date": "2024"}, V, "t")  # malformed upload_date
+    with tempfile.TemporaryDirectory() as d:  # LF newlines on every platform
+        assert b"\r" not in y.write_atomic(Path(d), "T", "a\nb\n").read_bytes()
 
 
 def test_write_path():

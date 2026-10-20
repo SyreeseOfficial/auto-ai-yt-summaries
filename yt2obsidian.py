@@ -383,7 +383,7 @@ def render(info, vid, text=None, reason=None):
     if text:
         label = re.sub(r"([*_])", r"\\\1", title.replace("[", "(").replace("]", ")"))
         return f"[{label}]({url})\nChannel: {channel}\nDate: {date}\n\n{text}\n"
-    return f"[YouTube]({url})\nTitle: {title}\nChannel: {channel}\nDate: {date}\n\nNo transcript: {reason or NO_CAPS}\n"
+    return f"[YouTube]({url})\nTitle: {info.get('title') or 'unknown'}\nChannel: {channel}\nDate: {date}\n\nNo transcript: {reason or NO_CAPS}\n"
 
 
 def find_existing(inbox, vid):
