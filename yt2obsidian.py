@@ -1,13 +1,15 @@
 """yt2obsidian: YouTube URL -> transcript note in an Obsidian vault. See PRD.md."""
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 ID_RE = re.compile(r"[\w-]{11}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
@@ -146,17 +148,74 @@ def render(info, vid, text=None, reason=None):
     return f"[YouTube]({url})\nTitle: {title}\nChannel: {channel}\nDate: {date}\n\nNo transcript: {reason or NO_CAPS}\n"
 
 
+def find_existing(inbox, vid):
+    """Path of a note for this video (matched on the URL in its first line), or None."""
+    needle = f"youtube.com/watch?v={vid}"
+    for p in Path(inbox).glob("*.md"):
+        with open(p, encoding="utf-8", errors="replace") as f:
+            if needle in f.readline():
+                return p
+    return None
+
+
+def write_atomic(inbox, name, body):
+    """Write body to inbox/<name>.md via temp file + hard link. Never overwrites; numbers on clash."""
+    inbox = Path(inbox)
+    inbox.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".yt2obsidian-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.chmod(tmp, 0o644)  # mkstemp makes it 0600
+        for n in range(1, 1000):
+            dest = inbox / (f"{name}.md" if n == 1 else f"{name} ({n}).md")
+            try:
+                os.link(tmp, dest)  # atomic, fails if dest exists
+                return dest
+            except FileExistsError:
+                continue
+        raise OSError(f"too many name clashes for {name!r}")
+    finally:
+        os.unlink(tmp)
+
+
+def notify(msg):
+    try:
+        subprocess.run(["notify-send", "yt2obsidian", msg], timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def open_obsidian(vault, path):
+    rel = Path(path).relative_to(vault).as_posix()
+    uri = f"obsidian://open?vault={quote(Path(vault).name, safe='')}&file={quote(rel, safe='')}"
+    subprocess.Popen(["xdg-open", uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def main():
-    # Phase 2 scratch: print what we'd write, no file output yet.
     cfg = load_config()
-    vid, kind = parse_url(get_url(sys.argv))
+    inbox = cfg["vault"] / cfg["inbox"]
+    try:
+        vid, kind = parse_url(get_url(sys.argv))
+    except ValueError as e:
+        print(e)
+        return 1
+    if kind == "short":
+        print(f"Skipped: Shorts are not processed ({vid})")
+        return 0
+    if (old := find_existing(inbox, vid)):
+        print(f"Already saved: {old}")
+        return 0
     info = fetch(vid, cfg)
-    url = pick_track(info)
-    text = transcript_text(fetch_track(url, cfg)) if url else None
-    print({k: info.get(k) for k in ("title", "channel", "upload_date", "live_status", "availability", "age_limit")})
-    print("track:", bool(url), "| reason:", None if text else stub_reason(info))
-    print((text or "")[:300])
+    track = pick_track(info)
+    text = transcript_text(fetch_track(track, cfg)) if track else None
+    reason = None if text else stub_reason(info)
+    path = write_atomic(inbox, safe_name(info.get("title"), vid), render(info, vid, text, reason))
+    print(path)
+    notify(f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"))
+    open_obsidian(cfg["vault"], path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

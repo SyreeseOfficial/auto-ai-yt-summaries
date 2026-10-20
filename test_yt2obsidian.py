@@ -76,6 +76,28 @@ def test_render():
     assert "unknown" in render({}, V, "t")
 
 
+def test_write_path():
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as d:
+        inbox = Path(d) / "deep" / "Inbox"  # created on demand
+        a = write_atomic(inbox, "Title", render({"title": "T"}, V, "x"))
+        assert a.name == "Title.md"
+        b = write_atomic(inbox, "Title", "other")  # same name, different video
+        assert b.name == "Title (2).md" and a.read_text().endswith("x\n")
+        assert find_existing(inbox, V) == a
+        assert find_existing(inbox, "AAAAAAAAAAA") is None
+        assert [p.name for p in inbox.iterdir() if p.name.startswith(".")] == []
+        # a failed write leaves no temp file and no note
+        with mock.patch("os.link", side_effect=OSError("boom")):
+            try:
+                write_atomic(inbox, "Other", "x")
+            except OSError:
+                pass
+        assert sorted(p.name for p in inbox.iterdir()) == ["Title (2).md", "Title.md"]
+
+
 if __name__ == "__main__":
     for name, f in list(globals().items()):
         if name.startswith("test_"):
