@@ -753,6 +753,19 @@ def test_process_result_and_modes():
             assert y.process("https://youtu.be/AAAAAAAAAAA", cfg).outcome == "failed"  # never raises
 
 
+def test_color():
+    assert y.paint("x", "red") == "x"  # tests run without a terminal
+    with mock.patch.object(y.sys, "stdout", mock.Mock(isatty=lambda: True)), mock.patch.dict("os.environ", {"NO_COLOR": ""}):
+        assert y.paint("x", "red") == "\033[31mx\033[0m"
+        with mock.patch.dict("os.environ", {"NO_COLOR": "1"}):
+            assert y.paint("x", "red") == "x"
+        out = io.StringIO()
+        out.isatty = lambda: True
+        with contextlib.redirect_stdout(out):
+            y.finish("u", {"notify": "never"}, "failed", "failed: boom", 1, "boom", repl=True)
+        assert out.getvalue() == "\033[31mfailed\033[0m: boom\n"  # only the status word is colored
+
+
 def test_log_is_private():
     d = Path(tempfile.mkdtemp())
     with mock.patch.object(y, "LOG", d / "run.log"):

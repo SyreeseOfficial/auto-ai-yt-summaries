@@ -26,6 +26,7 @@ ln -s "$PWD/yt" ~/.local/bin/yt           # optional: run it as `yt`
 - `yt <url>` saves one link. `yt --retry` saves the links in `retry.txt`. `--no-open` skips Obsidian and `--no-notify` skips toasts for that run.
 - With no terminal (a hotkey) it reads the clipboard and shows the result as a toast. Hyprland: `bind = SUPER, Y, exec, ~/.local/bin/yt` (after the `ln -s` above; or `exec, "/path/to/project/yt"`, quoted if the path has spaces).
 - Settings (`s`, or `yt --settings`): open in Obsidian, notifications (`auto` = toast only for hotkey runs, `always`, `never`), inbox folder, fetch timeout, attempts per fetch. `d` resets all but the inbox. Changes apply to the next paste and are written to `config.toml` with comments kept. Unknown keys in `config.toml` are reported, not used.
+- Output is colored in a terminal (status word green/yellow/red, warnings yellow). Set `NO_COLOR=1` to turn it off.
 - Exit codes: 0 ok (saved, stub, duplicate, skipped), 1 bad input or failure, 2 stopped (throttled or network down; the URL is queued in `retry.txt`).
 - Two runs at once take turns, so a double-tapped hotkey reports the second as a duplicate.
 

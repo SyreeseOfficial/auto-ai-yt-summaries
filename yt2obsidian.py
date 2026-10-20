@@ -51,6 +51,9 @@ HELP = """  <link>  save a transcript; several links (one per line or space-sepa
   s       settings
   ?       this help
   q       quit"""
+ANSI = {"bold": 1, "dim": 2, "red": 31, "green": 32, "yellow": 33, "blue": 34}
+OUTCOME_COLOR = {"saved": "green", "stub": "yellow", "duplicate": "blue", "skipped": "yellow", "stopped": "yellow",
+                 "failed": "red", "invalid": "red"}
 SUMMARY = ("saved", "stub", "duplicate", "skipped", "failed", "stopped")
 LOG_AS = {"stopped": "failed", "invalid": "failed"}  # run.log keeps its old outcome names
 ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -188,12 +191,12 @@ def settings_menu():
     while True:
         try:
             cfg = load_config()
-            print(f"\nSettings  {HERE / 'config.toml'}\n  vault: {cfg['vault']}")
+            print(f"\n{paint('Settings', 'bold')}  {HERE / 'config.toml'}\n  vault: {cfg['vault']}")
             if bad := unknown_keys(cfg):
-                print(f"  warning: unknown keys ignored: {', '.join(bad)}")
+                print(paint(f"  warning: unknown keys ignored: {', '.join(bad)}", "yellow"))
             for i, k in enumerate(keys, 1):
                 label, _, allowed = SETTINGS[k]
-                print(f"  {i}. [{'x' if cfg[k] else ' '}] {label}" if allowed is bool else f"  {i}. {label}: {show_setting(k, cfg[k])}")
+                print(f"  {i}. [{paint('x', 'green') if cfg[k] else ' '}] {label}" if allowed is bool else f"  {i}. {label}: {show_setting(k, cfg[k])}")
             pick = ask("Number changes a setting, d resets, Enter goes back\nsettings> ")
             if pick is None or pick.lower() in ("", "q", "b"):
                 return
@@ -225,7 +228,7 @@ def settings_menu():
             else:
                 print(f"pick 1-{len(keys)}, d, or Enter")
         except (ValueError, OSError) as e:
-            print(f"Config problem: {cap(e)}")
+            print(paint(f"Config problem: {cap(e)}", "red"))
             return
 
 
@@ -245,6 +248,11 @@ def clean(s):
 def cap(s, n=200):
     s = clean(s)
     return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def paint(s, color):
+    """s in an ANSI color; plain when output is not a terminal or NO_COLOR is set (https://no-color.org)."""
+    return f"\033[{ANSI[color]}m{s}\033[0m" if sys.stdout.isatty() and not os.environ.get("NO_COLOR") else s
 
 
 def rel(path, vault):
@@ -327,7 +335,7 @@ def with_retries(fn, retries):
                 raise
             if attempt == retries:
                 raise Stop(f"network failure after {attempt} tries: {e}", "network down or unreachable") from e
-            print(f"Retrying ({attempt + 1}/{retries})...")
+            print(paint(f"Retrying ({attempt + 1}/{retries})...", "yellow"))
             time.sleep(RETRY_DELAY * attempt)
 
 
@@ -507,7 +515,7 @@ def toast(cfg, msg, repl=False, urgent=False):
 
 def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None, note=None, secs=None, source=None):
     """The one exit for every run: print, log, toast (`note` is the shorter toast text). Typos typed at the prompt are not logged."""
-    print(msg)
+    print(re.sub(r"^\w+", lambda m: paint(m.group(), OUTCOME_COLOR.get(outcome, "bold")), msg))  # color the status word
     if not (repl and outcome == "invalid"):
         if outcome == "invalid":
             url = cap(url, 60)  # a password pasted by mistake must not land in the log whole
@@ -559,7 +567,7 @@ def _process(url, cfg, repl, source):
                        err=str(old), path=old)
 
         exc = None
-        print("fetching...")
+        print(paint("fetching...", "dim"))
         try:
             try:
                 info = with_retries(lambda: fetch(vid, cfg["timeout"]), cfg["retries"])
@@ -673,14 +681,14 @@ def repl():
     """Paste a link, press Enter, repeat. Ctrl-D, Ctrl-C or 'q' quits."""
     try:
         cfg = load_config()
-        print(f"yt2obsidian (yt-dlp {yt_dlp.version.__version__})\nvault: {cfg['vault']}\ninbox: {cfg['inbox']}")
+        print(f"{paint('yt2obsidian', 'bold')} (yt-dlp {yt_dlp.version.__version__})\n{paint('vault', 'green')}: {cfg['vault']}\n{paint('inbox', 'yellow')}: {cfg['inbox']}")
         if not (cfg["vault"] / ".obsidian").is_dir():
-            print("warning: no .obsidian folder in the vault; wrong path, or the vault was never opened in Obsidian?")
+            print(paint("warning: no .obsidian folder in the vault; wrong path, or the vault was never opened in Obsidian?", "yellow"))
         if bad := unknown_keys(cfg):
-            print(f"warning: unknown keys in config.toml ignored: {', '.join(bad)}")
+            print(paint(f"warning: unknown keys in config.toml ignored: {', '.join(bad)}", "yellow"))
     except ValueError as e:
-        print(f"Config problem: {e}")
-    print("Paste a YouTube link and press Enter (? = help, q = quit)")
+        print(paint(f"Config problem: {e}", "red"))
+    print(f"Paste a YouTube link and press Enter {paint('(? = help, q = quit)', 'red')}")
     readline.set_auto_history(False)  # only real links go in the history, not typos or pasted secrets
     try:
         readline.read_history_file(HISTORY)
@@ -717,7 +725,7 @@ def repl():
             try:
                 cfg = load_config()
             except ValueError as e:
-                print(f"Config problem: {e}")
+                print(paint(f"Config problem: {e}", "red"))
                 continue
             if cmd in ("s", "settings"):
                 settings_menu()
@@ -740,18 +748,18 @@ def repl():
                     try:
                         res.path.unlink(missing_ok=True)
                     except OSError as e:
-                        print(f"failed: {cap(e)}")
+                        print(paint(f"failed: {cap(e)}", "red"))
                         continue
                     made.pop()
                     stats[res.outcome] -= 1
                     last = last if last != res.path else None
                     log_run(res.path, "undone")
-                    print("deleted")
+                    print(paint("deleted", "green"))
             else:
                 try:
                     url = line or clipboard()  # Enter alone pastes for you
                 except (ValueError, OSError, subprocess.SubprocessError) as e:
-                    print(f"failed: {cap(e)}")
+                    print(paint(f"failed: {cap(e)}", "red"))
                     continue
                 results = batch(url, cfg, repl=True)
                 for res in results:
@@ -764,9 +772,9 @@ def repl():
         except OSError:
             pass
     if parts := [f"{stats[k]} {k}" for k in SUMMARY if stats[k]]:
-        print("session: " + ", ".join(parts))
+        print(paint("session:", "bold") + " " + ", ".join(parts))
     if n := len(read_retry()):
-        print(f"{n} URL{'s' * (n != 1)} waiting in {RETRY.name} (r to retry)")
+        print(paint(f"{n} URL{'s' * (n != 1)} waiting in {RETRY.name} (r to retry)", "yellow"))
     return 0
 
 
