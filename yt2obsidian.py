@@ -460,11 +460,13 @@ def open_obsidian(path):
         pass
 
 
-def log_run(url, outcome, err=""):
-    url, err = (re.sub(r"\s+", " ", str(x)).strip() for x in (url, err))  # one row per run, tab-separated
+def log_run(url, outcome, err="", title="", secs=None, source=""):
+    """One tab-separated row: time, url, outcome, detail, title, seconds, source. New columns go on the end (recent_saves reads by position)."""
+    url, err, title = (re.sub(r"\s+", " ", str(x)).strip() for x in (url, err, title))
+    secs = "" if secs is None else f"{secs:.1f}"
     try:
         with open(LOG, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().isoformat(timespec='seconds')}\t{url}\t{outcome}\t{err}\n")
+            f.write(f"{datetime.now().isoformat(timespec='seconds')}\t{url}\t{outcome}\t{err}\t{title}\t{secs}\t{source}\n")
     except OSError:
         pass  # a full disk must not hide the run's real outcome
 
@@ -503,24 +505,26 @@ def toast(cfg, msg, repl=False, urgent=False):
         notify(msg, urgent)
 
 
-def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None, note=None):
+def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None, note=None, secs=None, source=None):
     """The one exit for every run: print, log, toast (`note` is the shorter toast text). Typos typed at the prompt are not logged."""
     print(msg)
     if not (repl and outcome == "invalid"):
-        if code and outcome != "invalid":  # most breakage is a stale yt-dlp, so the log says which one
+        if outcome == "invalid":
+            url = cap(url, 60)  # a password pasted by mistake must not land in the log whole
+        elif code:  # most breakage is a stale yt-dlp, so the log says which one
             err = f"{err} [yt-dlp {yt_dlp.version.__version__}]"
-        log_run(url, LOG_AS.get(outcome, outcome), err)
+        log_run(url, LOG_AS.get(outcome, outcome), err, title or "", secs, source or ("repl" if repl else "argv"))
     toast(cfg, note or msg.split("\n")[0], repl, urgent=bool(code))
     return Result(code, outcome, path, title)
 
 
-def process(url, cfg, repl=False):
+def process(url, cfg, repl=False, source=None):
     """Save one URL. Prints the outcome, logs it, returns a Result; never raises.
     Runs one at a time per project folder, so a double-tapped hotkey sees the first run's note as a duplicate."""
     try:
         lock = open(LOCK, "a")
     except OSError:
-        return _process(url, cfg, repl)  # no lock file: run unlocked rather than not at all
+        return _process(url, cfg, repl, source)  # no lock file: run unlocked rather than not at all
     with lock:
         try:
             try:
@@ -531,15 +535,15 @@ def process(url, cfg, repl=False):
         except KeyboardInterrupt:
             print("cancelled")
             return Result(1, "cancelled")
-        return _process(url, cfg, repl)
+        return _process(url, cfg, repl, source)
 
 
-def _process(url, cfg, repl):
+def _process(url, cfg, repl, source):
     t0 = time.monotonic()
     vault = cfg["vault"]
 
     def fin(outcome, msg, code=0, err="", **kw):
-        return finish(url, cfg, outcome, msg, code, err, repl, **kw)
+        return finish(url, cfg, outcome, msg, code, err, repl, secs=time.monotonic() - t0, source=source, **kw)
 
     try:
         inbox = vault / cfg["inbox"]
@@ -561,14 +565,14 @@ def _process(url, cfg, repl):
                 info = with_retries(lambda: fetch(vid, cfg["timeout"]), cfg["retries"])
             except yt_dlp.utils.DownloadError as e:  # private, members-only...: stub
                 if "video is unavailable" in str(e).lower():  # deleted or mistyped ID: nothing to save
-                    return fin("failed", f"failed: video unavailable ({vid})", 1, str(e))
+                    return fin("failed", f"failed: video unavailable ({vid})", 1, f"DownloadError: {e}")
                 info, exc = {}, e
             track = pick_track(info)
             text = transcript_text(with_retries(lambda: fetch_track(track, cfg["timeout"]), cfg["retries"])) if track else None
         except Stop as e:
             queue_retry(canonical)
             msg = f"stopped: {e.short or cap(e)}\nqueued in {RETRY.name}: {canonical}"
-            return fin("stopped", msg + ("\nwait a while, then press r" if repl else ""), 2, str(e))
+            return fin("stopped", msg + ("\nwait a while, then press r" if repl else ""), 2, f"Stop: {e}")
 
         reason = None if text else stub_reason(info, exc)
         path = write_atomic(inbox, safe_name(info.get("title"), vid, info.get("channel") or info.get("uploader")), render(info, vid, text, reason))
@@ -587,7 +591,7 @@ def _process(url, cfg, repl):
         log_run(url, "cancelled")
         return Result(1, "cancelled")
     except (ValueError, OSError) as e:  # config, disk
-        return fin("failed", f"failed: {cap(e)}", 1, str(e))
+        return fin("failed", f"failed: {cap(e)}", 1, f"{type(e).__name__}: {e}")
     except Exception as e:  # anything else must still end in a log row, not a traceback
         return fin("failed", f"failed: {type(e).__name__}: {cap(e)}", 1, f"{type(e).__name__}: {e}")
 
@@ -599,13 +603,13 @@ def urls_in(text):
     return links if links and len(toks) > 1 else [text.strip()]
 
 
-def batch(text, cfg, repl=False):
+def batch(text, cfg, repl=False, source=None):
     """process() each link in text. A throttle or Ctrl-C stops the run; links not yet tried go to retry.txt."""
     urls, results = urls_in(text), []
     for i, u in enumerate(urls):
         if len(urls) > 1:
             print(f"[{i + 1}/{len(urls)}]")
-        results.append(process(u, cfg, repl))
+        results.append(process(u, cfg, repl, source))
         if results[-1].outcome in ("stopped", "cancelled"):
             rest = urls[i + 1:]
             for u in rest:
@@ -640,10 +644,11 @@ def main(args=None, cfg=None, retry=False, **override):
         cfg = {**(cfg or load_config()), **override}
         if retry:
             return max((r.code for r in retry_queue(cfg, repl=False)), default=0)
-        url = get_url(sys.argv[1:] if args is None else args)
+        args = sys.argv[1:] if args is None else args
+        url = get_url(args)
     except (ValueError, OSError, subprocess.SubprocessError) as e:  # bad config, empty clipboard, no wl-paste
         return finish(url, cfg, "failed", f"failed: {cap(e)}", 1, str(e)).code
-    return max(r.code for r in batch(url, cfg))
+    return max(r.code for r in batch(url, cfg, source="argv" if args else "clipboard"))
 
 
 def retry_queue(cfg, repl=True):
@@ -652,7 +657,7 @@ def retry_queue(cfg, repl=True):
     if not urls:
         print("retry.txt is empty")
     for i, u in enumerate(urls):
-        results.append(process(u, cfg, repl))
+        results.append(process(u, cfg, repl, "retry"))
         if results[-1].outcome in ("stopped", "cancelled"):
             left = urls[i:]
             break

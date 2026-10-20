@@ -630,6 +630,27 @@ def test_lock_serializes_runs():
     assert p.call_count == 1
 
 
+def test_log_columns():
+    info = {"title": "T", "channel": "C", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    rows = lambda d: [r.split("\t") for r in (d / "run.log").read_text().splitlines()]
+    _, _, d = run_main(f"https://youtu.be/{V}", info, track)
+    t, url, outcome, detail, title, secs, source = rows(d)[0]  # time, url, outcome, detail, title, seconds, source
+    assert outcome == "saved" and title == "T" and float(secs) >= 0 and source == "argv" and detail.endswith("T.md")
+    run_main(f"https://youtu.be/{V}", info, track, tmp=d)
+    assert rows(d)[1][2:5] == ["duplicate", rows(d)[0][3], ""]  # no title, no fetch
+    _, _, d = run_main("x" * 100 + " secret", {}, None)  # non-URL text is cut before it reaches the log
+    assert len(rows(d)[0][1]) <= 60 and "secret" not in rows(d)[0][1]
+    _, _, d = run_main(f"https://youtu.be/{V}", OSError("disk"), None)
+    assert "OSError: disk" in rows(d)[0][3]
+    # no argument: the clipboard is the source
+    d = Path(tempfile.mkdtemp())
+    with mock.patch.multiple(y, LOG=d / "run.log", RETRY=d / "retry.txt", LOCK=d / ".lock", at_terminal=lambda: False,
+                             clipboard=lambda: "garbage", notify=lambda *a: None):
+        y.main([], {"vault": d, "inbox": "Inbox", "timeout": 1, "retries": 1})
+    assert rows(d)[0][6] == "clipboard"
+
+
 if __name__ == "__main__":
     for name, f in list(globals().items()):
         if name.startswith("test_"):

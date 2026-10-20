@@ -17,4 +17,5 @@ Hyprland keybind (reads the clipboard, toasts the result): `bind = SUPER, Y, exe
 One-shot options: `yt --retry` saves the links in `retry.txt` (stops at the first throttle, keeps the rest queued); `--no-open` skips Obsidian and `--no-notify` skips toasts for that run. Two runs at once take turns, so a double-tapped hotkey reports the second as a duplicate. Exit codes: 0 ok (saved, stub, duplicate, skipped), 1 bad input or failure, 2 stopped (throttled or network down; the URL is queued).
 
 - Logs every run to `run.log`; throttled/network-failed URLs go to `retry.txt`.
+- `run.log` is tab-separated, one row per run: time, URL, outcome (`saved`, `stub`, `duplicate`, `skipped`, `failed`, `cancelled`, `undone`), detail (note path, or the error with its type and the yt-dlp version), title, seconds, source (`repl`, `argv`, `clipboard`, `retry`). Older rows have fewer columns. Count outcomes: `cut -f3 run.log | sort | uniq -c`.
 - If it suddenly stops working, update yt-dlp first: `.venv/bin/pip install -U yt-dlp`.

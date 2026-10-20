@@ -317,6 +317,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## M. Logging
 
+**Status: done (7 of 10), 2026-10-20.** Done: #233 (title column), #234 (seconds column), #235 (source column: `repl`, `argv`, `clipboard`, `retry`), #236 (non-URL text cut to 60 characters in the log), #239 and #241 (README documents the columns and the `cut | sort | uniq -c` line), #242 (detail starts with the exception class: `OSError:`, `DownloadError:`, `Stop:`). New columns sit after the detail, so older rows and `recent_saves` still read. #240 was already done in K (#211). Not done: #237 (one machine, no travel), #238 (7 rows). Test: `test_log_columns`.
+
 233. **[S]** **Log the title and note path** on `saved` and `stub` rows. Today a row has URL and outcome only.
 234. **[S]** **Log elapsed seconds** per run.
 235. **[S]** **Add a `source` column** (`repl`, `clipboard`, `argv`) to separate hotkey runs from terminal runs.
