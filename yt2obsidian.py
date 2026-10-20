@@ -265,7 +265,7 @@ def parse_url(s):
         vid = parts[0] if parts else None
     elif parts[:1] == ["watch"]:
         vid = (parse_qs(u.query).get("v") or [None])[0]
-    elif parts[:1] in (["shorts"], ["live"], ["embed"]) and len(parts) > 1:
+    elif parts[:1] in (["shorts"], ["live"], ["embed"], ["v"]) and len(parts) > 1:
         vid, short = parts[1], parts[0] == "shorts"
     if not vid or not ID_RE.fullmatch(vid):
         raise ValueError(f"no video id in URL: {s[:60]!r}")

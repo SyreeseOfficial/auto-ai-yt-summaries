@@ -22,7 +22,7 @@ def test_parse_url():
     for u in (f"https://www.youtube.com/watch?v={V}", f"https://youtu.be/{V}",
               f"https://youtu.be/{V}?t=42&si=abc", f"https://www.youtube.com/watch?feature=share&v={V}&t=1s",
               f"https://m.youtube.com/watch?v={V}", f"https://www.youtube.com/live/{V}?feature=share",
-              f"https://www.youtube.com/embed/{V}"):
+              f"https://www.youtube.com/embed/{V}", f"https://www.youtube.com/v/{V}"):
         assert y.parse_url(u) == (V, False), u
     assert y.parse_url(f"https://www.youtube.com/shorts/{V}") == (V, True)
     for u in ("hello", "https://example.com/watch?v=" + V, "https://www.youtube.com/watch",
