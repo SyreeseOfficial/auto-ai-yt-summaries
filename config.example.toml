@@ -2,3 +2,7 @@ vault = "~/Documents/Panacea"   # Obsidian vault folder (its basename is the vau
 inbox = "Transcripts"           # folder inside the vault
 timeout = 30                    # seconds per fetch
 retries = 3
+
+# Toggles (default true); the settings menu (`s` in the prompt, or `yt2obsidian.py --settings`) edits these.
+# open_obsidian = true          # open the note in Obsidian after saving
+# notify = true                 # desktop notification (hotkey runs only)

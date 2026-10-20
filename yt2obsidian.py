@@ -31,6 +31,7 @@ TOGGLES = {  # config key -> menu label, all default on
 THROTTLE = ("http error 429", "not a bot", "rate-limited", "try again later")
 USAGE = """usage: yt2obsidian.py [URL]   save a transcript (no URL: prompt in a terminal, else read the clipboard)
        yt2obsidian.py -i       interactive prompt (or run ./yt; ./yt URL saves one link)
+       yt2obsidian.py --settings  settings menu only
        yt2obsidian.py -h       this help"""
 HELP = """  <link>  save a transcript; several links (one per line or space-separated) are saved in turn
           Enter alone: use the clipboard
@@ -94,32 +95,64 @@ def load_config():
     return cfg
 
 
+def edit_config(fn):
+    """Apply fn(text) -> text to config.toml via a temp file + os.replace, so a crash can't truncate it."""
+    path = HERE / "config.toml"
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_text(fn(path.read_text(encoding="utf-8")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def set_toggle(key, value):
     """Rewrite `key = value` in config.toml, keeping comments; append if absent."""
-    path = HERE / "config.toml"
     line = f"{key} = {str(value).lower()}"
-    text = path.read_text()
-    text, n = re.subn(rf"^{key}\s*=\s*\S+", line, text, flags=re.M)
-    path.write_text(text if n else text.rstrip("\n") + "\n" + line + "\n")
+
+    def put(text):
+        text, n = re.subn(rf"^{key}\s*=\s*\S+", line, text, flags=re.M)
+        return text if n else text.rstrip("\n") + "\n" + line + "\n"
+
+    edit_config(put)
+
+
+def reset_toggles():
+    """Drop every toggle line from config.toml, so they all fall back to the default (on)."""
+    edit_config(lambda text: re.sub(rf"^({'|'.join(TOGGLES)})\s*=.*\n?", "", text, flags=re.M))
+
+
+def unknown_keys(cfg):
+    return sorted(set(cfg) - {"vault", "inbox", "timeout", "retries", *TOGGLES})
 
 
 def settings_menu():
-    """Numbered on/off toggles; Enter returns to the prompt."""
+    """Numbered on/off toggles; Enter, q or b returns to the prompt."""
+    keys = list(TOGGLES)
     while True:
-        cfg = load_config()
-        keys = list(TOGGLES)
-        print("\nSettings (number toggles, Enter to go back)")
-        for i, k in enumerate(keys, 1):
-            print(f"  {i}. [{'x' if cfg[k] else ' '}] {TOGGLES[k]}")
         try:
-            pick = input("settings> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
+            cfg = load_config()
+            print(f"\nSettings  {HERE / 'config.toml'}\n  vault: {cfg['vault']}\n  inbox: {cfg['inbox']}")
+            if (bad := unknown_keys(cfg)):
+                print(f"  warning: unknown keys ignored: {', '.join(bad)}")
+            for i, k in enumerate(keys, 1):
+                print(f"  {i}. [{'x' if cfg[k] else ' '}] {TOGGLES[k]}")
+            try:
+                pick = input(f"[x] on, [ ] off. Number toggles, d resets, Enter goes back\nsettings> ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if pick in ("", "q", "b"):
+                return
+            if pick == "d":
+                reset_toggles()
+                print("toggles reset to defaults (all on)")
+            elif pick.isdigit() and 1 <= int(pick) <= len(keys):
+                k = keys[int(pick) - 1]
+                set_toggle(k, not cfg[k])
+                print(f"{TOGGLES[k]}: {'off' if cfg[k] else 'on'}")
+            else:
+                print(f"pick 1-{len(keys)}, d, or Enter")
+        except (ValueError, OSError) as e:
+            print(f"Config problem: {cap(e)}")
             return
-        if not pick:
-            return
-        if pick.isdigit() and 1 <= int(pick) <= len(keys):
-            set_toggle(keys[int(pick) - 1], not cfg[keys[int(pick) - 1]])
 
 
 def clean(s):
@@ -519,6 +552,8 @@ def repl():
     try:
         cfg = load_config()
         print(f"yt2obsidian (yt-dlp {yt_dlp.version.__version__})\nvault: {cfg['vault']}\ninbox: {cfg['inbox']}")
+        if (bad := unknown_keys(cfg)):
+            print(f"warning: unknown keys in config.toml ignored: {', '.join(bad)}")
     except ValueError as e:
         print(f"Config problem: {e}")
     print("Paste a YouTube link and press Enter (? = help, q = quit)")
@@ -563,10 +598,7 @@ def repl():
                 print(f"Config problem: {e}")
                 continue
             if cmd in ("s", "settings"):
-                try:
-                    settings_menu()
-                except ValueError as e:
-                    print(f"Config problem: {e}")
+                settings_menu()
             elif cmd == "o":
                 target = last or (recent_saves(1) or [(0, None)])[0][1]
                 print(f"opening {rel(target, cfg['vault'])}" if target else "nothing saved yet")
@@ -626,6 +658,9 @@ def cli(args):
         for sig in (signal.SIGTERM, signal.SIGHUP):  # closing the terminal mid-save still cleans up the temp file
             signal.signal(sig, lambda *_: sys.exit(1))
         return repl()
+    if args == ["--settings"]:
+        settings_menu()
+        return 0
     if args[:1] in (["-h"], ["--help"]):
         print(USAGE)
         return 0

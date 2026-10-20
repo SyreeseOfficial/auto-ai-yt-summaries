@@ -275,6 +275,8 @@ def test_cli():
             mock.patch.object(y, "at_terminal", return_value=False):
         assert cli([]) == 7 and cli(["-i"]) == 9 and cli(["-h"]) == 0 and cli(["--help"]) == 0
         assert cli(["-i", "https://youtu.be/x"]) == 1 and cli(["--bogus"]) == 1
+        with mock.patch.object(y, "settings_menu") as menu:
+            assert cli(["--settings"]) == 0 and menu.called
 
 
 def run_repl(lines, info=None, track=None, retry=None):
@@ -369,6 +371,54 @@ def test_batch_and_undo():
     out, d, _ = run_repl([" ".join(f"https://youtu.be/{i}?t=5" for i in ids), "q"], y.Throttled("429"))
     assert out.count("stopped:") == 1 and "queued the other 2" in out
     assert (d / "retry.txt").read_text().split() == [f"https://www.youtube.com/watch?v={i}" for i in ids]
+
+
+def test_settings():
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        cfgfile = d / "config.toml"
+        cfgfile.write_text(f'vault = "{d}"  # mine\ninbox = "I"\nnotify = true  # keep\nnotfy = 1\n')
+        with mock.patch.object(y, "HERE", d):
+            set_toggle("notify", False)  # rewrites in place, keeps the comment and other keys
+            assert "notify = false  # keep" in cfgfile.read_text()
+            assert '# mine' in cfgfile.read_text() and 'inbox = "I"' in cfgfile.read_text()
+            set_toggle("open_obsidian", False)  # absent key is appended, lowercase
+            assert cfgfile.read_text().endswith("open_obsidian = false\n")
+            assert not list(d.glob("*.tmp")) and unknown_keys(load_config()) == ["notfy"]
+            assert load_config()["notify"] is False
+            reset_toggles()
+            assert "notify" not in cfgfile.read_text() and "open_obsidian" not in cfgfile.read_text()
+            assert load_config()["notify"] is True and "inbox" in cfgfile.read_text()
+            # the menu: flip, invalid input, leave with q; reset with d
+            feed = iter(["1", "x", "9", "q"])
+            with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print") as pr:
+                settings_menu()
+            shown = "\n".join(str(c.args[0]) for c in pr.call_args_list if c.args)
+            assert "Open the note in Obsidian after saving: off" in shown and shown.count("pick 1-2") == 2
+            assert "unknown keys ignored: notfy" in shown
+            assert "open_obsidian = false" in cfgfile.read_text()
+            feed = iter(["d", ""])
+            with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print"):
+                settings_menu()
+            assert "open_obsidian" not in cfgfile.read_text()
+            # a broken config returns to the caller with a message, not a traceback
+            cfgfile.write_text("vault = [oops\n")
+            with mock.patch("builtins.print") as pr:
+                settings_menu()
+            assert "Config problem" in str(pr.call_args)
+
+
+def test_settings_apply_to_next_paste():
+    info = {"title": "T", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    out, d, opened = run_repl(["s", "1", "", f"https://youtu.be/{V}", "q"], info, track)
+    assert "Open the note in Obsidian after saving: off" in out and "saved (" in out
+    assert not [o for o in opened if o[0] == "open"]  # the toggle took effect with no restart
+    out, d, opened = run_repl(["s", "1", "1", "b", f"https://youtu.be/{V}", "q"], info, track)
+    assert [o for o in opened if o[0] == "open"]
 
 
 def test_update_and_default_mode():

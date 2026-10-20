@@ -104,6 +104,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## C. Settings menu
 
+**Status: done (14 of 22), 2026-10-20.** Done: #70, #71, #72, #73, #74, #75, #78, #79, #86, #87, #88, #89, #90, #91. Tests #245-247 are in `test_settings` and `test_settings_apply_to_next_paste`. Not done: #76 and #77 (editable values; #77 overlaps #230, a PRD call), #80 (changes when toasts fire), #81-85 (toggles for features that do not exist yet, or that need a PRD decision). The `d` command (#78) removes the toggle lines, so they fall back to on.
+
 70. **[S]** **`set_toggle` writes the config non-atomically** (:56). A crash mid-write truncates `config.toml` and loses your vault path. Write a temp file, then `os.replace`.
 71. **[S]** **`set_toggle` reads and writes without `encoding`** (:54, :56). Use `encoding="utf-8"`.
 72. **[S]** **Invalid input is silently ignored** (:74). `x` or `9` just redraws the menu. Print "pick 1-2".
