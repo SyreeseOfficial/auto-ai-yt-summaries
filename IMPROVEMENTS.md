@@ -131,6 +131,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## D. One-shot and hotkey path
 
+**Status: done (13 of 14), 2026-10-20.** Not done: #103 and #104 (need a real test from the Hyprland bind; if `node`/`deno` is missing there, set `js_runtimes`). #92/#93 are `--retry` (removes saved lines, keeps throttled ones, exit 2); the REPL `r` shares the code. #94 is `--no-open` / `--no-notify`. #95 duplicate and skipped now toast (hotkey only under `auto`). #96/#97 failures are `-u critical`, successes `-t 3000`, `-a yt2obsidian`. #98 the toast shows the real title. #99 short stub reasons in the toast. #100 `.lock` file with `flock` (second run waits, then reports a duplicate). #101 `wl-paste --type text`. #102 `yt` no longer forces `-i`, so the bind can call it. #105 exit codes are in `--help` and the README.
+
 92. **[M]** **Add `--retry`.** Loop `retry.txt`, remove lines that succeed, stop at the first throttle. Without it the retry list is write-only; with it the REPL's `r` is one call.
 93. **[S]** **Remove a URL from `retry.txt` once it saves** (by hand or in the REPL). Otherwise old entries stay forever.
 94. **[S]** **`--no-open` and `--no-notify` flags** override the config for one run (batch use).

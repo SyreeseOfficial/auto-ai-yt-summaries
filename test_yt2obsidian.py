@@ -115,7 +115,7 @@ def run_main(url, fetch=None, track=None, tmp=None):
 
     with mock.patch.multiple(y, fetch=fake_fetch, fetch_track=lambda u, c: track, RETRY_DELAY=0,
                              LOG=d / "run.log", RETRY=d / "retry.txt", at_terminal=lambda: False,
-                             notify=calls["notify"].append, open_obsidian=lambda *a: None):
+                             notify=lambda m, u=False: calls["notify"].append(m), open_obsidian=lambda *a: None):
         code = main([None, url], cfg)
     return code, calls, d
 
@@ -308,7 +308,7 @@ def run_repl(lines, info=None, track=None, retry=None):
     with mock.patch.multiple(y, HERE=d, LOG=d / "run.log", RETRY=d / "retry.txt", HISTORY=d / ".history",
                              fetch=lambda v, c: (_ for _ in ()).throw(fake) if fake else (info or {}),
                              fetch_track=lambda u, c: track, RETRY_DELAY=0, at_terminal=lambda: False,
-                             notify=lambda m: opened.append(("toast", m)),
+                             notify=lambda m, u=False: opened.append(("toast", m)),
                              open_obsidian=lambda v, p: opened.append(("open", p)),
                              clipboard=lambda: "https://youtu.be/" + V), \
             mock.patch("builtins.input", fake_input), contextlib.redirect_stdout(out):
@@ -433,7 +433,7 @@ def test_toast_modes():
     for mode, repl, term, want in (("auto", False, False, 1), ("auto", False, True, 0), ("auto", True, False, 0),
                                    ("always", True, True, 1), ("never", False, False, 0)):
         sent.clear()
-        with mock.patch.object(y, "notify", sent.append), mock.patch.object(y, "at_terminal", return_value=term):
+        with mock.patch.object(y, "notify", lambda m, u=False: sent.append(m)), mock.patch.object(y, "at_terminal", return_value=term):
             y.toast({"notify": mode}, "m", repl)
         assert len(sent) == want, (mode, repl, term)
 
@@ -486,6 +486,56 @@ def test_clean_cap_rel():
         with mock.patch.object(y, "LOG", Path(d) / "run.log"):
             assert recent_saves() == [("t2", a), ("t3", b)]  # old row, deleted note, failure: all left out
             assert recent_saves(1) == [("t3", b)]
+
+
+def test_one_shot_flags_and_toasts():
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    with mock.patch.object(y, "main", return_value=0) as m, mock.patch.object(y, "at_terminal", return_value=False):
+        assert cli(["--no-open", "--no-notify", "u"]) == 0
+        assert m.call_args.args == ([None, "u"],) and m.call_args.kwargs == {"retry": False, "open_obsidian": False, "notify": "never"}
+        assert cli(["--retry"]) == 0 and m.call_args.kwargs["retry"] is True
+        assert cli(["--retry", "u"]) == 1  # a URL and --retry together make no sense
+    info = {"title": "T", "channel": "C", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    code, calls, d = run_main(f"https://youtu.be/{V}", info, track)
+    assert calls["notify"] == ["Saved: T"]  # real title, not the file stem
+    code, calls, _ = run_main(f"https://youtu.be/{V}", info, track, tmp=d)
+    assert calls["notify"] == ["duplicate: Inbox/T.md"], calls["notify"]  # hotkey shows the duplicate
+    code, calls, _ = run_main(f"https://www.youtube.com/shorts/{V}")
+    assert code == 0 and calls["notify"][0].startswith("skipped")
+    # --retry: saves what it can, keeps what still throttles, exit 2
+    d = Path(tempfile.mkdtemp())
+    (d / "retry.txt").write_text(f"https://www.youtube.com/watch?v={V}\nhttps://www.youtube.com/watch?v=aaaaaaaaaab\n")
+    cfg = {"vault": d, "inbox": "Inbox", "timeout": 1, "retries": 1}
+    def fetch(vid, c):
+        if vid == V:
+            return info
+        raise Throttled("429", "throttled")
+    with mock.patch.multiple(y, fetch=fetch, fetch_track=lambda u, c: track, LOG=d / "run.log", RETRY=d / "retry.txt",
+                             LOCK=d / ".lock", at_terminal=lambda: False, notify=lambda m, u=False: None,
+                             open_obsidian=lambda *a: None):
+        assert main(retry=True, cfg=cfg) == 2
+    assert (d / "retry.txt").read_text() == "https://www.youtube.com/watch?v=aaaaaaaaaab\n" and (d / "Inbox" / "T.md").exists()
+    # notify builds the right command; failures are critical, successes time out
+    with mock.patch.object(y.subprocess, "Popen") as pop:
+        notify("m", True)
+        notify("m")
+    assert pop.call_args_list[0].args[0] == ["notify-send", "-a", "yt2obsidian", "-u", "critical", "m"]
+    assert pop.call_args_list[1].args[0] == ["notify-send", "-a", "yt2obsidian", "-t", "3000", "m"]
+
+
+def test_lock_serializes_runs():
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    d = Path(tempfile.mkdtemp())
+    with mock.patch.object(y, "LOCK", d / ".lock"), mock.patch.object(y, "_process", return_value="ran") as p:
+        assert process("u", {}) == "ran"
+        with mock.patch.object(y.fcntl, "flock", side_effect=[BlockingIOError, KeyboardInterrupt]):
+            assert process("u", {}).outcome == "cancelled"  # lock busy, then Ctrl-C while waiting
+    assert p.call_count == 1
 
 
 if __name__ == "__main__":

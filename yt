@@ -1,6 +1,5 @@
 #!/bin/sh
-# ./yt        interactive prompt: paste links one at a time
+# ./yt        interactive prompt in a terminal; reads the clipboard with no terminal (the Hyprland bind)
 # ./yt URL    save one link (any other yt2obsidian.py argument works too)
 d=$(dirname "$(readlink -f "$0")")
-[ $# -eq 0 ] && set -- -i
 exec "$d/.venv/bin/python" "$d/yt2obsidian.py" "$@"

@@ -1,4 +1,5 @@
 """yt2obsidian: YouTube URL -> transcript note in an Obsidian vault. See PRD.md."""
+import fcntl
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import yt_dlp
 HERE = Path(__file__).parent
 LOG = HERE / "run.log"
 RETRY = HERE / "retry.txt"
+LOCK = HERE / ".lock"
 HISTORY = HERE / ".history"
 RETRY_DELAY = 2  # seconds, times attempt number
 SETTINGS = {  # config key -> (menu label, default, allowed): bool, a {choice: note} dict, int, or str
@@ -32,10 +34,14 @@ SETTINGS = {  # config key -> (menu label, default, allowed): bool, a {choice: n
     "retries": ("Attempts per fetch", 3, int),
 }
 THROTTLE = ("http error 429", "not a bot", "rate-limited", "try again later")
+FLAGS = ("--retry", "--no-open", "--no-notify")
 USAGE = """usage: yt2obsidian.py [URL]   save a transcript (no URL: prompt in a terminal, else read the clipboard)
        yt2obsidian.py -i       interactive prompt (or run ./yt; ./yt URL saves one link)
+       yt2obsidian.py --retry  save the links waiting in retry.txt, stop at the first throttle
        yt2obsidian.py --settings  settings menu only
-       yt2obsidian.py -h       this help"""
+       yt2obsidian.py -h       this help
+options for a URL or --retry run: --no-open (skip Obsidian), --no-notify (no toasts)
+exit codes: 0 ok (saved, stub, duplicate, skipped), 1 bad input or failure, 2 stopped (throttled or network down, URL queued)"""
 HELP = """  <link>  save a transcript; several links (one per line or space-separated) are saved in turn
           Enter alone: use the clipboard
   o       open the last saved note in Obsidian
@@ -58,6 +64,7 @@ MAX_NAME = 255 - len(".md") - len(" (99)")
 RESTRICTED = "video is private, members-only, or age-restricted"
 LIVE = "live stream or premiere, not finished; transcript not yet available"
 NO_CAPS = "no captions available"
+TOAST_REASON = {RESTRICTED: "restricted", LIVE: "live or upcoming", NO_CAPS: "no captions"}
 
 
 class Quiet:
@@ -240,7 +247,7 @@ def get_url(argv):
 
 
 def clipboard():
-    r = subprocess.run(["wl-paste", "--no-newline"], capture_output=True, text=True, timeout=5)
+    r = subprocess.run(["wl-paste", "--no-newline", "--type", "text"], capture_output=True, text=True, timeout=5)
     if r.returncode or not r.stdout.strip():
         raise ValueError("clipboard is empty or not text")
     return r.stdout.strip()
@@ -408,9 +415,10 @@ def write_atomic(inbox, name, body):
         os.unlink(tmp)
 
 
-def notify(msg):
+def notify(msg, urgent=False):
+    shown = ["-u", "critical"] if urgent else ["-t", "3000"]  # failures stay until dismissed
     try:  # fire and forget: a missing notification daemon must not stall the prompt
-        subprocess.Popen(["notify-send", "yt2obsidian", msg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["notify-send", "-a", "yt2obsidian", *shown, msg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
 
@@ -459,11 +467,11 @@ def queue_retry(url):
         pass
 
 
-def toast(cfg, msg, repl=False):
+def toast(cfg, msg, repl=False, urgent=False):
     """Desktop notification per the notify setting; auto skips runs with a terminal attached (you are already looking at it)."""
     mode = (cfg or {}).get("notify", "auto")
     if mode == "always" or (mode == "auto" and not repl and not at_terminal()):
-        notify(msg)
+        notify(msg, urgent)
 
 
 def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=None):
@@ -471,13 +479,32 @@ def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=
     print(msg)
     if not (repl and outcome == "invalid"):
         log_run(url, LOG_AS.get(outcome, outcome), err)
-    if code:
-        toast(cfg, msg, repl)
+    if code or outcome in ("duplicate", "skipped"):  # a hotkey press must never look like it did nothing
+        toast(cfg, msg.split("\n")[0], repl, urgent=bool(code))
     return Result(code, outcome, path, title)
 
 
 def process(url, cfg, repl=False):
-    """Save one URL. Prints the outcome, logs it, returns a Result; never raises."""
+    """Save one URL. Prints the outcome, logs it, returns a Result; never raises.
+    Runs one at a time per project folder, so a double-tapped hotkey sees the first run's note as a duplicate."""
+    try:
+        lock = open(LOCK, "a")
+    except OSError:
+        return _process(url, cfg, repl)  # no lock file: run unlocked rather than not at all
+    with lock:
+        try:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("another run is saving, waiting...")
+                fcntl.flock(lock, fcntl.LOCK_EX)
+        except KeyboardInterrupt:
+            print("cancelled")
+            return Result(1, "cancelled")
+        return _process(url, cfg, repl)
+
+
+def _process(url, cfg, repl):
     t0 = time.monotonic()
     vault = cfg["vault"]
 
@@ -523,7 +550,7 @@ def process(url, cfg, repl=False):
             msg += "\n  hint: yt-dlp may be out of date; press u (update yt-dlp)"
         print(msg)
         log_run(url, "saved" if text else "stub", str(path) if text else f"{reason} | {path}")
-        toast(cfg, f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"), repl)
+        toast(cfg, f"Saved: {cap(title, 80)}" if text else f"Stub: {cap(title, 80)} ({TOAST_REASON.get(reason, cap(reason, 60))})", repl)
         if cfg.get("open_obsidian", True):
             open_obsidian(vault, path)
         return Result(0, "saved" if text else "stub", path, title)
@@ -578,23 +605,26 @@ def update_ytdlp():
     print(f"yt-dlp {old} -> {new}; quit and start again to use it" if new != old else f"yt-dlp {old} is already the latest")
 
 
-def main(argv=None, cfg=None):
+def main(argv=None, cfg=None, retry=False, **override):
+    """One-shot run: the URL in argv[1] or the clipboard, or the retry queue. Returns the exit code (see USAGE)."""
     url = ""
     try:
-        cfg = cfg or load_config()
+        cfg = {**(cfg or load_config()), **override}
+        if retry:
+            return max((r.code for r in retry_queue(cfg, repl=False)), default=0)
         url = get_url(argv if argv is not None else sys.argv)
     except (ValueError, OSError, subprocess.SubprocessError) as e:  # bad config, empty clipboard, no wl-paste
         return finish(url, cfg, "failed", f"failed: {cap(e)}", 1, str(e)).code
     return max(r.code for r in batch(url, cfg))
 
 
-def retry_queue(cfg):
+def retry_queue(cfg, repl=True):
     """Re-run every URL in retry.txt; keep the ones still waiting. Stops at the first throttle."""
     urls, results, left = read_retry(), [], []
     if not urls:
         print("retry.txt is empty")
     for i, u in enumerate(urls):
-        results.append(process(u, cfg, repl=True))
+        results.append(process(u, cfg, repl))
         if results[-1].outcome in ("stopped", "cancelled"):
             left = urls[i:]
             break
@@ -723,10 +753,13 @@ def cli(args):
     if args[:1] in (["-h"], ["--help"]):
         print(USAGE)
         return 0
-    if args[:1] and args[0].startswith("-"):
+    flags = [a for a in args if a in FLAGS]
+    rest = [a for a in args if a not in FLAGS]
+    if any(a.startswith("-") for a in rest) or ("--retry" in flags and rest):
         print(USAGE, file=sys.stderr)
         return 1
-    return main()
+    over = {**({"open_obsidian": False} if "--no-open" in flags else {}), **({"notify": "never"} if "--no-notify" in flags else {})}
+    return main([None, *rest], retry="--retry" in flags, **over)
 
 
 if __name__ == "__main__":
