@@ -300,6 +300,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## L. Config
 
+**Status: done (9 of 12), 2026-10-20.** Already done in earlier sections: #221 (`timeout` and `retries` validated), #224 and #231 (`config.example.toml` lists the optional keys), #232 (every config error starts with the file path). Done now: #222 and #223 (the note opens with `obsidian://open?path=<absolute path>`; no vault-name assumption, `open_obsidian` takes just the path), #225 (a relative `vault` is rejected), #226 and #296 (a hand-edited absolute or `..` `inbox` is rejected in `load_config`, same check as the menu), #227 (the prompt banner warns when the vault has no `.obsidian/` folder), #300 (path quoted with `safe=""`), tests for all of these. Not done: #228 (only if you run two vaults), #229 (first-run setup; the error already says to copy the example), #230 (PRD call; the menu now edits both).
+
 221. **[S]** **Validate `retries >= 1` and `timeout > 0`.** `retries = 0` makes `with_retries` return `None` and crash later.
 222. **[V][S]** **`config.example.toml` says "its basename is the vault name"** (line 1). Becomes false if you switch to `obsidian://open?path=`; update the comment.
 223. **[S]** **Use `obsidian://open?path=<abs path>`** and delete `relative_to`, `quote(vault.name)`, and the vault-name assumption (:245-248). One line, and works if the vault display name differs from the folder.

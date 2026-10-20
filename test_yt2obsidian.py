@@ -353,6 +353,11 @@ def test_misc_a():
             assert y.load_config()["notify"] == "never"  # the old on/off form still reads
             (d / "config.toml").write_text('vault = "%s/nope"\ninbox = "I"\n' % d)
             assert "not a folder" in err_of(y.load_config)
+            for bad in ("/tmp/x", "../x", "a/../../x", ""):
+                (d / "config.toml").write_text('vault = "%s"\ninbox = "%s"\n' % (d, bad))
+                assert "inbox must be a relative folder" in err_of(y.load_config)
+            (d / "config.toml").write_text('vault = "rel/dir"\ninbox = "I"\n')
+            assert "vault must be an absolute path" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = [oops\n')
             assert "line 1" in err_of(y.load_config)
             (d / "config.toml").write_text('vault = "%s"\ninbox = "I"\n' % d)
@@ -405,7 +410,7 @@ def run_repl(lines, info=None, track=None, retry=None):
                              fetch=lambda v, c: (_ for _ in ()).throw(fake) if fake else (info or {}),
                              fetch_track=lambda u, c: track, RETRY_DELAY=0, at_terminal=lambda: False,
                              notify=lambda m, u=False: opened.append(("toast", m)),
-                             open_obsidian=lambda v, p: opened.append(("open", p)),
+                             open_obsidian=lambda p: opened.append(("open", p)),
                              clipboard=lambda: "https://youtu.be/" + V), \
             mock.patch("builtins.input", fake_input), contextlib.redirect_stdout(out):
         assert y.repl() == 0
@@ -608,6 +613,12 @@ def test_one_shot_flags_and_toasts():
         y.notify("m")
     assert pop.call_args_list[0].args[0] == ["notify-send", "-a", "yt2obsidian", "-u", "critical", "m"]
     assert pop.call_args_list[1].args[0] == ["notify-send", "-a", "yt2obsidian", "-t", "3000", "m"]
+
+
+def test_open_obsidian_uri():
+    with mock.patch.object(y.subprocess, "Popen") as pop:
+        y.open_obsidian(Path("/tmp/My Vault/In box/A & B.md"))
+    assert pop.call_args.args[0] == ["xdg-open", "obsidian://open?path=%2Ftmp%2FMy%20Vault%2FIn%20box%2FA%20%26%20B.md"]
 
 
 def test_lock_serializes_runs():

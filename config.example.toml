@@ -1,5 +1,5 @@
-vault = "~/Documents/Panacea"   # Obsidian vault folder (its basename is the vault name)
-inbox = "Transcripts"           # folder inside the vault
+vault = "~/Documents/Panacea"   # absolute path (or ~/...) of the Obsidian vault
+inbox = "Transcripts"           # folder inside the vault (no leading / and no ..)
 timeout = 15                    # seconds per fetch (optional)
 retries = 3                     # attempts per fetch, not extra retries (optional)
 

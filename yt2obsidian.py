@@ -109,8 +109,14 @@ def load_config():
         if allowed is int and not (isinstance(cfg[k], int) and not isinstance(cfg[k], bool) and cfg[k] >= 1):
             raise ValueError(f"{path}: {k} must be a whole number, 1 or more")
     cfg["vault"] = Path(cfg["vault"]).expanduser()
+    if not cfg["vault"].is_absolute():  # a hotkey run starts in $HOME, so "relative" would mean another place
+        raise ValueError(f"{path}: vault must be an absolute path (or start with ~): {cfg['vault']}")
     if not cfg["vault"].is_dir():
         raise ValueError(f"{path}: vault is not a folder: {cfg['vault']}")
+    try:
+        check_inbox(cfg["inbox"])
+    except ValueError as e:
+        raise ValueError(f"{path}: inbox {e}") from None
     return cfg
 
 
@@ -148,6 +154,13 @@ def reset_settings():
     edit_config(put)
 
 
+def check_inbox(raw):
+    """raw if it is a folder name inside the vault; a leading / or .. would save outside it."""
+    if not isinstance(raw, str) or not raw or Path(raw).is_absolute() or ".." in Path(raw).parts:
+        raise ValueError("must be a relative folder name (no leading / and no ..)")
+    return raw
+
+
 def parse_setting(key, raw):
     """Typed value for text typed into the menu. Raises ValueError with a message for the user."""
     raw = raw.strip()
@@ -155,9 +168,7 @@ def parse_setting(key, raw):
         if not raw.isdigit() or int(raw) < 1:
             raise ValueError("must be a whole number, 1 or more")
         return int(raw)
-    if not raw or Path(raw).is_absolute() or ".." in Path(raw).parts:
-        raise ValueError("must be a relative folder name (no leading / and no ..)")
-    return raw
+    return check_inbox(raw)
 
 
 def show_setting(key, v):
@@ -441,9 +452,8 @@ def notify(msg, urgent=False):
         pass
 
 
-def open_obsidian(vault, path):
-    rel = Path(path).relative_to(vault).as_posix()
-    uri = f"obsidian://open?vault={quote(Path(vault).name, safe='')}&file={quote(rel, safe='')}"
+def open_obsidian(path):
+    uri = f"obsidian://open?path={quote(str(Path(path).resolve()), safe='')}"
     try:
         subprocess.Popen(["xdg-open", uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
@@ -569,7 +579,7 @@ def _process(url, cfg, repl):
         if exc and re.search(r"unable to extract|nsig", str(exc), re.I):
             msg += "\n  hint: yt-dlp may be out of date; press u (update yt-dlp)"
         if cfg.get("open_obsidian", True):
-            open_obsidian(vault, path)
+            open_obsidian(path)
         return fin("saved" if text else "stub", msg, err=str(path) if text else f"{reason} | {path}", path=path, title=title,
                    note=f"Saved: {cap(title, 80)}" if text else f"Stub: {cap(title, 80)} ({TOAST_REASON.get(reason, cap(reason, 60))})")
     except KeyboardInterrupt:
@@ -659,6 +669,8 @@ def repl():
     try:
         cfg = load_config()
         print(f"yt2obsidian (yt-dlp {yt_dlp.version.__version__})\nvault: {cfg['vault']}\ninbox: {cfg['inbox']}")
+        if not (cfg["vault"] / ".obsidian").is_dir():
+            print("warning: no .obsidian folder in the vault; wrong path, or the vault was never opened in Obsidian?")
         if bad := unknown_keys(cfg):
             print(f"warning: unknown keys in config.toml ignored: {', '.join(bad)}")
     except ValueError as e:
@@ -708,7 +720,7 @@ def repl():
                 target = last or (recent_saves(1) or [(0, None)])[0][1]
                 print(f"opening {rel(target, cfg['vault'])}" if target else "nothing saved yet")
                 if target:
-                    open_obsidian(cfg["vault"], target)
+                    open_obsidian(target)
             elif cmd == "r":
                 for res in retry_queue(cfg):
                     count(res)
