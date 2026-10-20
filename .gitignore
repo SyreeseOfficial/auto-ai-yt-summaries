@@ -1,0 +1,5 @@
+.venv/
+config.toml
+run.log
+retry.txt
+__pycache__/
