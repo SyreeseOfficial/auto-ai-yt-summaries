@@ -218,6 +218,15 @@ def test_main_throttle_and_timeout():
         assert "\tfailed\t" in (d / "run.log").read_text() and calls["notify"] and notes(d) == []
 
 
+def test_retry_queue_is_canonical_and_deduped():
+    d = None
+    for url in (f"https://youtu.be/{V}", f"https://www.youtube.com/watch?v={V}&pp=abc"):
+        code, _, d = run_main(url, y.Stop("429"), tmp=d)
+        assert code == 2
+    assert (d / "retry.txt").read_text() == f"https://www.youtube.com/watch?v={V}\n"
+    assert "[yt-dlp " in (d / "run.log").read_text()  # failure rows name the yt-dlp version
+
+
 def test_main_crash_paths():
     for exc, out in ((KeyError("inbox"), "KeyError"), (KeyboardInterrupt(), "cancelled"),
                      (ValueError("caption download was not valid JSON"), "valid JSON")):
@@ -455,7 +464,7 @@ def test_settings():
             assert "Inbox folder inside the vault: Notes" in shown and "Seconds to wait per fetch must be a whole number" in shown
             assert shown.count("pick 1-5") == 2 and "unknown keys ignored: notfy" in shown
             c = y.load_config()
-            assert (c["open_obsidian"], c["notify"], c["inbox"], c["timeout"]) == (False, "always", "Notes", 30)
+            assert (c["open_obsidian"], c["notify"], c["inbox"], c["timeout"]) == (False, "always", "Notes", 15)
             feed = iter(["d", ""])
             with mock.patch("builtins.input", lambda p="": next(feed)), mock.patch("builtins.print"):
                 y.settings_menu()

@@ -29,7 +29,7 @@ SETTINGS = {  # config key -> (menu label, default, allowed): bool, a {choice: n
     "open_obsidian": ("Open the note in Obsidian after saving", True, bool),
     "notify": ("Desktop notifications", "auto", {"auto": "only when no terminal is attached", "always": "even at the prompt", "never": "off"}),
     "inbox": ("Inbox folder inside the vault", None, str),
-    "timeout": ("Seconds to wait per fetch", 30, int),
+    "timeout": ("Seconds to wait per fetch", 15, int),
     "retries": ("Attempts per fetch", 3, int),
 }
 THROTTLE = ("http error 429", "not a bot", "rate-limited", "try again later")
@@ -497,6 +497,8 @@ def finish(url, cfg, outcome, msg, code=0, err="", repl=False, path=None, title=
     """The one exit for every run: print, log, toast (`note` is the shorter toast text). Typos typed at the prompt are not logged."""
     print(msg)
     if not (repl and outcome == "invalid"):
+        if code and outcome != "invalid":  # most breakage is a stale yt-dlp, so the log says which one
+            err = f"{err} [yt-dlp {yt_dlp.version.__version__}]"
         log_run(url, LOG_AS.get(outcome, outcome), err)
     toast(cfg, note or msg.split("\n")[0], repl, urgent=bool(code))
     return Result(code, outcome, path, title)

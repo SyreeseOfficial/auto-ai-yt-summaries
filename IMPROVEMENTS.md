@@ -265,6 +265,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## J. Retry, throttle, network
 
+**Status: done (8 of 12), 2026-10-20.** Already done in earlier sections: #203 (`encoding` on `retry.txt`), #204 (`--retry` stops at the first throttle), #206 (caption fetch uses `ydl.urlopen`). Done now: #197 (`retries` counts attempts; menu and example file say so, key name kept so your config still works), #198 (default `timeout` is 15; your `config.toml` still says 30), #200 (failed and stopped rows in `run.log` end with `[yt-dlp <version>]`), #202 (test: `youtu.be/ID` and `watch?v=ID&pp=...` queue one line). Not done: #196 (a URL fetched seconds ago does not expire; a re-fetch would not fix a real 403), #199 (a hard deadline needs threads; `timeout` x `retries` is the cap), #201 (nothing would read the reason), #205 (probably no), #207 (skip; saves about 5 s on a dead network only).
+
 196. **[S]** **Treat 403 on the caption URL as a stop-and-refetch.** Expired signed URLs come back 403. Re-fetch `info` once instead of retrying the same URL.
 197. **[S]** **`retries = 3` means three tries,** not three retries. Rename the key `attempts` or document it.
 198. **[V][S]** **Consider `timeout = 15`.** A dead network gave up in 6.2 s (3 tries). With real timeouts it is up to 30 s x 3 plus sleeps, about 96 s with no feedback (computed, not measured).
