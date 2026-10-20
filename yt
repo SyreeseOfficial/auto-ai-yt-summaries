@@ -1,0 +1,4 @@
+#!/bin/sh
+# Interactive mode: paste links one at a time.
+d=$(dirname "$(readlink -f "$0")")
+exec "$d/.venv/bin/python" "$d/yt2obsidian.py" -i

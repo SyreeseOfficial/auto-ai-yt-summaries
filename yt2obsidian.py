@@ -19,6 +19,10 @@ HERE = Path(__file__).parent
 LOG = HERE / "run.log"
 RETRY = HERE / "retry.txt"
 RETRY_DELAY = 2  # seconds, times attempt number
+TOGGLES = {  # config key -> menu label, all default on
+    "open_obsidian": "Open the note in Obsidian after saving",
+    "notify": "Desktop notifications",
+}
 NET_RE = re.compile(r"unable to download|timed out|connection|resolution|network is unreachable|name or service", re.I)
 ID_RE = re.compile(r"[\w-]{11}")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
@@ -38,9 +42,37 @@ class Throttled(Exception):
 def load_config():
     """config.toml next to this script, with defaults applied."""
     with open(HERE / "config.toml", "rb") as f:
-        cfg = {"timeout": 30, "retries": 3, **tomllib.load(f)}
+        cfg = {"timeout": 30, "retries": 3, **{k: True for k in TOGGLES}, **tomllib.load(f)}
     cfg["vault"] = Path(cfg["vault"]).expanduser()
     return cfg
+
+
+def set_toggle(key, value):
+    """Rewrite `key = value` in config.toml, keeping comments; append if absent."""
+    path = HERE / "config.toml"
+    line = f"{key} = {str(value).lower()}"
+    text = path.read_text()
+    text, n = re.subn(rf"^{key}\s*=\s*\S+", line, text, flags=re.M)
+    path.write_text(text if n else text.rstrip("\n") + "\n" + line + "\n")
+
+
+def settings_menu():
+    """Numbered on/off toggles; Enter returns to the prompt."""
+    while True:
+        cfg = load_config()
+        keys = list(TOGGLES)
+        print("\nSettings (number toggles, Enter to go back)")
+        for i, k in enumerate(keys, 1):
+            print(f"  {i}. [{'x' if cfg[k] else ' '}] {TOGGLES[k]}")
+        try:
+            pick = input("settings> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not pick:
+            return
+        if pick.isdigit() and 1 <= int(pick) <= len(keys):
+            set_toggle(keys[int(pick) - 1], not cfg[keys[int(pick) - 1]])
 
 
 def get_url(argv):
@@ -233,11 +265,15 @@ def main(argv=None, cfg=None):
     inbox = cfg["vault"] / cfg["inbox"]
     url = ""
 
+    def ping(msg):
+        if cfg.get("notify", True):
+            notify(msg)
+
     def done(outcome, msg, code=0, err=""):
         print(msg)
         log_run(url, outcome, err)
         if code:
-            notify(msg)
+            ping(msg)
         return code
 
     try:
@@ -268,10 +304,28 @@ def main(argv=None, cfg=None):
     msg = f"Saved: {path}" if text else f"Saved stub ({reason}): {path}"
     print(msg)
     log_run(url, "saved" if text else "stub", reason or "")
-    notify(f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"))
-    open_obsidian(cfg["vault"], path)
+    ping(f"Saved: {path.stem}" + ("" if text else f" (stub: {reason})"))
+    if cfg.get("open_obsidian", True):
+        open_obsidian(cfg["vault"], path)
     return 0
 
 
+def repl():
+    """Paste a link, press Enter, repeat. Ctrl-D, Ctrl-C or 'q' quits."""
+    print("Paste a YouTube link and press Enter (s = settings, q = quit)")
+    while True:
+        try:
+            line = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if line in ("q", "quit", "exit"):
+            return 0
+        if line in ("s", "settings"):
+            settings_menu()
+        elif line:
+            main(["", line])
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(repl() if sys.argv[1:] == ["-i"] else main())
