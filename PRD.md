@@ -15,35 +15,24 @@ Keep the cost at zero: no paid APIs, no paid services, no subscription AI.
 Produce notes whose filenames match the video title, so they are easy to find and open in Obsidian.
 Make the output work with Obsidian Sync, so the note appears on the laptop and phone without extra steps.
 Be easy to build and maintain as a personal hobby project.
-4. Non-Goals for v1
+4. Non-Goals
 No AI summaries, key-point extraction, or any language model use.
-No timestamps in the transcript.
-No links to related notes, no tag generation, no embeddings or semantic matching.
-No playlist or channel processing. Single videos only.
-No YouTube Shorts handling. Shorts are skipped.
-No thumbnail download.
-No sponsor or ad segment removal.
-No mobile trigger. The tool runs on the desktop only.
-No index page or automatic table of contents for saved notes.
-No frontmatter (YAML metadata block) in the note.
-No H1 heading in the note body.
-No multi-URL batch input. Single URL per run for v1.
-No separate raw-transcript backup. Obsidian Sync already covers the vault.
-No auto-update. Updates are manual.
 No overwriting of existing notes, ever.
-No preview step before saving.
-No conflict handling for Obsidian Sync while writing. Sync’s own conflict handling is trusted.
+No YouTube Shorts handling. Shorts are skipped.
+No playlist or channel processing. Single videos only (several links may be pasted at once; each is saved on its own).
+No sponsor or ad segment removal.
+Also out of scope: timestamps, related-note links and tags, thumbnails, an index page, a mobile trigger, auto-update (manual only), and a background service.
+
 5. Users
 
 The only user is the author, who is the sole owner of the vault. The tool is a personal script, not a product. It does not need to be installable by others, although it should be clean enough to share later if wanted. The user runs Arch Linux with the Omarchy setup, which uses Hyprland and Wayland. They use Obsidian daily and pay for Obsidian Sync, so the vault is available on a phone, a laptop, and any other device with Obsidian installed.
 
 6. User Workflow
-The user watches a YouTube video they want to keep.
-The user copies the video URL.
-The user runs the tool. By default it reads the URL from the clipboard. The tool can also take the URL as a command-line argument. If the user wants, they can bind the command to a hotkey in Hyprland.
+The user watches a YouTube video they want to keep and copies the link.
+The user runs `yt` in a terminal and pastes the link at the prompt (Enter alone pastes the clipboard). The command can also take the URL as an argument, and a Hyprland hotkey can run it with no terminal, in which case it reads the clipboard.
 The tool validates the URL, fetches metadata, fetches the transcript, and writes a note.
-The tool prints the full path of the new note and sends a desktop notification.
-The tool opens the new note in Obsidian through an Obsidian URI.
+The tool prints the path and title of the new note. Hotkey runs show a desktop notification instead of relying on the terminal.
+The tool opens the new note in Obsidian through an Obsidian URI (can be turned off in settings).
 Obsidian Sync carries the file to the other devices.
 
 If the video cannot produce a transcript, the tool still writes a stub note so the user knows the video was processed and why it has no transcript.
@@ -54,7 +43,7 @@ Accept a YouTube URL from the clipboard by default.
 Accept a URL as a single command-line argument as an alternative.
 Accept these URL forms: standard watch links (youtube.com/watch?v=...), short links (youtu.be/...), and links with extra query parameters such as timestamps or tracking tags. The tool should accept as many YouTube URL forms as practical.
 Reject YouTube Shorts URLs by skipping them with a clear message. Shorts are not processed.
-Accept only one URL per run in v1.
+Several links in one paste (one per line or space-separated) are each processed in turn.
 7.2 Transcript Retrieval
 Retrieve transcripts from YouTube captions only. No audio transcription in v1.
 Accept English captions only. Any English variant counts, including en, en-US, and en-GB.
@@ -93,7 +82,7 @@ No thumbnail or attachment is saved.
 The filename is the video title with characters Obsidian and common filesystems reject removed. Examples of characters to strip include the forward slash, backslash, colon, asterisk, question mark, double quote, angle brackets, and pipe.
 Accents are folded to plain letters (Café becomes Cafe), curly quotes and dashes become ASCII, and anything outside a short ASCII allowlist is removed. Trailing punctuation is stripped. A title with no usable characters becomes “<channel> video-<id>”.
 Spaces are kept.
-Full title length is not truncated for display, but filenames are capped to stay under the common 255-byte filesystem limit. The cap is the only length restriction.
+Filenames are capped to stay under the common 255-byte filesystem limit (room is left for ".md" and a " (99)" suffix). The cap is the only length restriction.
 The filename ends in .md.
 If a file with the same name already exists and belongs to a different video, append a number, for example “Title (2).md.”
 7.6 Duplicate Handling
@@ -135,9 +124,9 @@ Maintainability: this is a hobby project. Code should be readable and reasonably
 Privacy: the tool sends only the YouTube URL and transcript requests to YouTube. No other data leaves the machine.
 9. Technical Approach
 Python script with a small command-line interface.
-Clipboard reading uses wl-paste on Wayland. Exact command to be confirmed on the user’s system.
-Desktop notifications use notify-send. Exact command to be confirmed on the user’s system.
-Transcript retrieval uses an open-source Python library that reads YouTube captions. No AI model is involved.
+Clipboard reading uses wl-paste on Wayland.
+Desktop notifications use notify-send.
+Metadata and caption retrieval use the yt-dlp Python library (one call returns both). No AI model is involved.
 Obsidian integration works by writing markdown files into the vault folder. Opening the note uses an Obsidian URI.
 The vault folder is a normal folder on the local disk. Obsidian Sync handles propagation to other devices.
 Optional: a Hyprland keybinding that runs the tool with the clipboard as input.
@@ -157,34 +146,10 @@ A simulated throttle or network timeout. Expected: the run stops, the retry list
 
 Success for v1 means most captioned videos produce a correct note on the first try.
 
-11. Success Metrics
-Most videos that have English captions produce a note with the correct filename and full transcript.
-A typical run takes only a few seconds from paste to note.
-The user can open a saved note in Obsidian from the notification or the printed path.
-The user keeps using the tool regularly and does not need to hand-copy transcripts.
-12. Constraints and Dependencies
-Depends on YouTube continuing to expose captions in a way the transcript library can read. If that changes, the tool needs an update.
-Depends on the transcript library being maintained.
-Depends on Obsidian Sync for cross-device propagation. Sync conflicts are not handled by the tool.
-Depends on the user’s machine being on when a run happens. No background service.
-Throttling by YouTube may limit how many videos can be processed in a short time.
-13. Risks
-YouTube changes its caption access or blocks the library, which would break transcript retrieval.
-Heavy use triggers throttling. Mitigated by stopping and recording the retry list.
-Obsidian Sync conflicts if the same file is edited on two devices at once. Low risk because the tool only creates new files.
-Filename collisions. Mitigated by appending numbers.
-Filesystem path length limits on long titles. Mitigated by the length cap.
-14. Open Questions
-Which date should appear in the note: the date the video was published, the date the note was saved, or both? The user has not decided. The current default assumption is the publish date.
-When a transcript fetch fails for a reason other than a missing caption track, should the tool retry and then write a stub note, or report an error with no note? The user has not decided. The current assumption is retry and then stub.
-Exact clipboard and notification commands on the user’s Omarchy system need to be confirmed when the tool is built.
-Whether the user wants a Hyprland keybinding set up in v1 or later.
-15. Future Versions
-Timestamped key points and short summaries, using an AI model chosen at that time.
-Links to related notes already in the vault, using keyword matching or semantic similarity.
-Batch processing of multiple URLs in one run.
-Playlist and channel support.
-Audio transcription through a local model for videos without captions.
-Mobile trigger through a share sheet or a synced link file.
-Index page of saved transcripts.
-Automatic update checks.
+11. Success and Risks
+Success: most videos with English captions produce a note with the correct filename and full transcript within a few seconds, and the user keeps using the tool instead of hand-copying transcripts.
+Risks: YouTube changes caption access or throttles heavy use (the tool stops and queues the URL; the fix is usually updating yt-dlp), and long titles hit the filename limit (capped). The tool only creates new files, so Obsidian Sync conflicts are unlikely and not handled.
+Depends on yt-dlp being maintained, Obsidian Sync for propagation, and the machine being on during a run.
+
+12. Future Versions (unscheduled)
+Timestamped key points and short summaries, links to related notes, audio transcription for videos without captions, a mobile trigger, and an index page of saved transcripts.

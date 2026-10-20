@@ -1,13 +1,17 @@
-"""Plain-assert tests: python test_yt2obsidian.py"""
+"""Plain-assert tests: python test_yt2obsidian.py  (add --live for one real YouTube fetch)"""
 import contextlib
 import io
+import json
+import sys
 import tempfile
+import traceback
 from pathlib import Path
 from unittest import mock
 
 import yt2obsidian as y
 
 V = "dQw4w9WgXcQ"
+FIX = Path(__file__).parent / "fixtures"  # real YouTube data (Rick Astley), captured 2026-10-20
 
 
 def raises(f, *a):
@@ -30,7 +34,7 @@ def test_parse_url():
               f"https://youtu.be/{V},", f"(https://youtu.be/{V})", f"https://www.youtube.com/live/{V}",
               f"https://www.youtube.com/watch?v={V}&list=PLabc&index=2&pp=xyz", f"https://youtu.be/{V}\n"):
         assert y.parse_url(u) == (V, False), u
-    for u, word in ((f"https://www.youtube.com/playlist?list=PLabc", "playlist"), (f"https://youtube.com/clip/Ugkx{V}", "clip"),
+    for u, word in (("https://www.youtube.com/playlist?list=PLabc", "playlist"), (f"https://youtube.com/clip/Ugkx{V}", "clip"),
                     ("https://www.youtube.com/@name", "channel"), ("https://www.youtube.com/channel/UCabc", "channel"),
                     ("https://www.youtube.com/c/name", "channel"), ("https://www.youtube.com/user/name", "channel")):
         assert word in err_of(lambda: y.parse_url(u)), u
@@ -112,7 +116,7 @@ def test_render():
     stub = y.render(info, V, None, y.NO_CAPS)
     assert "Title: My [Video]" in stub and "Channel: Chan" in stub and "No transcript: no captions available" in stub
     assert "unknown" in y.render({}, V, "t")
-    assert f"Title: unknown\n" in y.render({}, V, None) and V not in y.render({}, V, None).split("\n")[1]  # stub never shows the raw ID as title
+    assert "Title: unknown\n" in y.render({}, V, None) and V not in y.render({}, V, None).split("\n")[1]  # stub never shows the raw ID as title
     assert "Date: unknown" in y.render({"title": "T", "upload_date": "2024"}, V, "t")  # malformed upload_date
     with tempfile.TemporaryDirectory() as d:  # LF newlines on every platform
         assert b"\r" not in y.write_atomic(Path(d), "T", "a\nb\n").read_bytes()
@@ -572,7 +576,7 @@ def test_clean_cap_rel():
         a, b, gone = (str(Path(d) / n) for n in ("a.md", "b.md", "gone.md"))
         for n in (a, b):
             Path(n).write_text("x")
-        rows = [f"t1\tu\tsaved\t", f"t2\tu\tstub\tno captions | {a}", f"t3\tu\tsaved\t{b}", f"t4\tu\tsaved\t{gone}",
+        rows = ["t1\tu\tsaved\t", f"t2\tu\tstub\tno captions | {a}", f"t3\tu\tsaved\t{b}", f"t4\tu\tsaved\t{gone}",
                 "t5\tu\tfailed\tx"]
         (Path(d) / "run.log").write_text("\n".join(rows) + "\n")
         with mock.patch.object(y, "LOG", Path(d) / "run.log"):
@@ -651,8 +655,138 @@ def test_log_columns():
     assert rows(d)[0][6] == "clipboard"
 
 
+def test_real_fixtures():
+    info = json.loads((FIX / "rick_info.json").read_text(encoding="utf-8"))
+    track = json.loads((FIX / "rick_track.json").read_text(encoding="utf-8"))
+    assert info["availability"] == "public" and info["live_status"] == "not_live" and info["age_limit"] == 0
+    assert y.stub_reason(info) == y.NO_CAPS or y.stub_reason(info).startswith("no English")  # captions exist, so only a failed download reaches this
+    url = y.pick_track(info)
+    assert url and "fmt=json3" in url and "tlang=" not in url and "lang=en" in url
+    assert y.pick_track({"automatic_captions": {"ja": info["automatic_captions"]["ja"]}}) is None  # a machine translation is not a track
+    text = y.transcript_text(track)  # real quirks: [♪♪♪] first, ♪ around lines, newlines inside events
+    assert text.startswith("We're no strangers to love You know the rules and so do I") and "♪" not in text and "[" not in text
+    assert "\n" not in text and "  " not in text
+
+
+def test_get_url_and_notify_errors():
+    assert y.get_url([" https://youtu.be/x "]) == "https://youtu.be/x"
+    ok = mock.Mock(returncode=0, stdout=" https://youtu.be/x\n")
+    with mock.patch.object(y.subprocess, "run", return_value=ok) as run:
+        assert y.get_url([]) == "https://youtu.be/x" and "--type" in run.call_args.args[0]
+    for bad in (mock.Mock(returncode=1, stdout=""), mock.Mock(returncode=0, stdout="  \n")):
+        with mock.patch.object(y.subprocess, "run", return_value=bad):
+            assert "empty" in err_of(lambda: y.get_url([]))
+    with mock.patch.object(y.subprocess, "run", side_effect=FileNotFoundError("wl-paste")):  # not installed: main reports it
+        code, _, _ = run_main_clipboard()
+        assert code == 1
+    d = Path(tempfile.mkdtemp())
+    (d / "v").mkdir()
+    (d / "config.toml").write_text('vault = "~/v"\ninbox = "I"\n')
+    with mock.patch.object(y, "HERE", d), mock.patch.dict("os.environ", {"HOME": str(d)}):
+        assert y.load_config()["vault"] == d / "v"  # ~ expands
+    with mock.patch.object(y.subprocess, "Popen", side_effect=FileNotFoundError):  # no notification daemon / xdg-open
+        y.notify("m")
+        y.open_obsidian(Path("/tmp/a.md"))
+
+
+def run_main_clipboard():
+    d = Path(tempfile.mkdtemp())
+    (d / "vault").mkdir()
+    cfg = {"vault": d / "vault", "inbox": "Inbox", "timeout": 1, "retries": 1}
+    with mock.patch.multiple(y, LOG=d / "run.log", RETRY=d / "retry.txt", LOCK=d / ".lock", at_terminal=lambda: False,
+                             notify=lambda *a, **k: None), contextlib.redirect_stdout(io.StringIO()):
+        return y.main([], cfg), None, d
+
+
+def test_fetch_and_caption_throttles():
+    for msg in ("ERROR: [youtube] x: HTTP Error 429: Too Many Requests", "ERROR: [youtube] x: Sign in to confirm you\u2019re not a bot"):
+        with mock.patch.object(y.yt_dlp, "YoutubeDL") as ydl:
+            ydl.return_value.__enter__.return_value.extract_info.side_effect = y.yt_dlp.utils.DownloadError(msg)
+            try:
+                y.fetch(V, 1)
+            except y.Stop as e:
+                assert e.short == "throttled by YouTube"
+            else:
+                assert False, msg
+    with mock.patch.object(y.yt_dlp, "YoutubeDL") as ydl:  # caption URL: 429 stops the run, 403 passes through (not retried)
+        urlopen = ydl.return_value.__enter__.return_value.urlopen
+        for status, want in ((429, y.Stop), (403, y.HTTPError)):
+            urlopen.side_effect = y.HTTPError(mock.Mock(status=status))
+            try:
+                y.fetch_track("u", 1)
+            except want:
+                pass
+            else:
+                assert False, status
+
+
+def test_toggles_in_main():
+    info = {"title": "T", "channel": "C", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    d = Path(tempfile.mkdtemp())
+    opened = []
+    for cfg_extra, opens, toasts in (({}, 1, 1), ({"open_obsidian": False}, 0, 1), ({"notify": "never"}, 1, 0)):
+        for p in (d / "vault" / "Inbox").glob("*.md"):
+            p.unlink()
+        cfg = {"vault": d / "vault", "inbox": "Inbox", "timeout": 1, "retries": 1, **cfg_extra}
+        sent = []
+        with mock.patch.multiple(y, fetch=lambda v, t: info, fetch_track=lambda u, t: track, LOG=d / "run.log", RETRY=d / "retry.txt",
+                                 LOCK=d / ".lock", at_terminal=lambda: False, notify=lambda m, u=False: sent.append(m),
+                                 open_obsidian=lambda p: opened.append(p)), contextlib.redirect_stdout(io.StringIO()):
+            opened.clear()
+            assert y.main([f"https://youtu.be/{V}"], cfg) == 0
+        assert (len(opened), len(sent)) == (opens, toasts), cfg_extra
+
+
+def test_process_result_and_modes():
+    info = {"title": "T", "channel": "C", "subtitles": {"en": [{"ext": "json3", "url": "u"}]}}
+    track = {"events": [{"segs": [{"utf8": "hi"}]}]}
+    d = Path(tempfile.mkdtemp())
+    cfg = {"vault": d, "inbox": "Inbox", "timeout": 1, "retries": 1, "notify": "never", "open_obsidian": False}
+    with mock.patch.multiple(y, fetch=lambda v, t: info, fetch_track=lambda u, t: track, LOG=d / "run.log", RETRY=d / "retry.txt",
+                             LOCK=d / ".lock"), contextlib.redirect_stdout(io.StringIO()):
+        r = y.process(f"https://youtu.be/{V}", cfg)
+        assert (r.code, r.outcome, r.title, r.path) == (0, "saved", "T", d / "Inbox" / "T.md")
+        assert y.process(f"https://youtu.be/{V}", cfg).outcome == "duplicate"
+        assert y.process("junk", cfg).code == 1 and y.process(f"https://youtu.be/shorts/{V}", cfg).outcome in ("invalid", "skipped")
+        with mock.patch.object(y, "fetch", side_effect=KeyError("boom")):
+            assert y.process("https://youtu.be/AAAAAAAAAAA", cfg).outcome == "failed"  # never raises
+
+
+def test_log_is_private():
+    d = Path(tempfile.mkdtemp())
+    with mock.patch.object(y, "LOG", d / "run.log"):
+        y.log_run("u", "saved")
+    assert (d / "run.log").stat().st_mode & 0o777 == 0o600  # a watch history: owner only
+
+
+def test_live():
+    """Opt-in canary (--live): one real captioned video end to end, to run after `pip install -U yt-dlp`."""
+    try:
+        info = y.fetch(V, 15)
+    except y.Stop as e:
+        print("throttled, canary skipped:", e)
+        return
+    track = y.pick_track(info)
+    assert track and info["title"] and info["channel"], "no English json3 track: YouTube or yt-dlp changed"
+    text = y.transcript_text(y.fetch_track(track, 15))
+    assert "strangers to love" in text and len(text) > 1000, text[:200]
+
+
 if __name__ == "__main__":
+    live = "--live" in sys.argv
+    scratch = tempfile.TemporaryDirectory()
+    tempfile.tempdir = scratch.name  # run_main's mkdtemp folders land here and go when the run ends
+    passed, failed = 0, []
     for name, f in list(globals().items()):
-        if name.startswith("test_"):
-            f()
-            print("ok", name)
+        if name.startswith("test_") and (live or name != "test_live"):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):  # the code under test prints; only the summary should show
+                    f()
+                passed += 1
+            except Exception:
+                failed.append(name)
+                traceback.print_exc()  # outside the redirect: failures must be visible
+    scratch.cleanup()
+    print(f"{passed} passed, {len(failed)} failed" + (f": {', '.join(failed)}" if failed else ""))
+    sys.exit(bool(failed))

@@ -332,6 +332,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## N. Tests
 
+**Status: done (all but #268), 2026-10-20.** Most were already covered by tests written in earlier sections (#243-247, #250, #253-254, #257-262, #269-270, #272). Added now: #248 (`~` expansion), #249 (`get_url`: argument, clipboard, empty clipboard, missing `wl-paste`), #251 (`notify` and `open_obsidian` swallow a missing binary), #252 (`open_obsidian = false` and `notify = never` in `main`), #255 (429 and bot check map to a stop), #256 (caption URL: 429 stops, 403 passes through), #263 and #264 (real Rick Astley data in `fixtures/`: the info subset and the first 10 caption events, captured live), #265 (temp folders now go to one scratch dir removed at exit; code output is silenced), #266 (runner prints `N passed, M failed` and exits 1 on failure), #267 (`--live` runs one real fetch), #271 (`process` returns a `Result`). Not done: #268 (paragraph breaks were moved to the skipped group). The 41 tests run in about 1 s.
+
 243. **[S]** **Test `repl` dispatch** with patched `input`: `q`, `quit`, `s`, blank line, a URL, and EOF. The suite has no REPL test (it only covers `main`).
 244. **[S]** **Test the REPL survives an exception and Ctrl-C** after the catch-all lands.
 245. **[S]** **Test `set_toggle` keeps comments and other keys** (use a temp `config.toml`, patch `HERE`).
@@ -365,6 +367,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## O. Docs (README, PRD, BUILD_PLAN)
 
+**Status: done (14 of 14), 2026-10-20.** README rewritten: prerequisites (#274), setup, use (prompt, `yt`, settings, hotkey line, exit codes), stubs (#275), the filename rule (#278), logs, four troubleshooting bullets (#276), tested versions (#279), venv rebuild (#280), the order to try when it breaks (#281), the canary (#282). #273 and #277 were already in. #283: kept the `retry.txt` line, since `--retry` exists. PRD: §6 leads with the prompt (#284), §4 and the several-links rule updated (#285), §7.5 no longer contradicts itself and §9 names yt-dlp (#286).
+
 273. **[S]** **README: document `./yt`, interactive mode, and the settings menu.** None of them are mentioned; the README still describes only the one-shot and hotkey flow.
 274. **[S]** **README: list the prerequisites** (`wl-clipboard`, `libnotify`, `xdg-utils`, Python 3.11+ for `tomllib`, Obsidian with URI support). A fresh machine fails at `wl-paste` otherwise.
 275. **[S]** **README: say what a stub is** and that stubs block re-saves.
@@ -382,6 +386,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 
 ## P. Repo hygiene and packaging
 
+**Status: done (7 of 8), 2026-10-20.** Done: #287 (`BUILD_PLAN.md` deleted; the JS-runtime risk is now in the README prerequisites), #288 (PRD §4 cut to the 5 scope guards plus one line; §14 open questions removed since all are decided; §11/§13 merged; §15 marked unscheduled), #289 (`yt-dlp>=2026.8`), #291 (`.git/hooks/pre-commit` runs the tests; it is local, not in the repo), #292 (ruff run once from a throwaway venv: no problems in `yt2obsidian.py`; 4 unused-import and f-string nits fixed in the tests; the `lambda` helpers in the tests were left), #290 (tag `v1`). Not done: #293 (renaming the folder and the GitHub repo breaks the Hyprland bind path and the remote URL; needs your call), #294 (only if you share it).
+
 287. **[M]** **Delete `BUILD_PLAN.md`.** It says "Written for the builder (Claude)" and Phases 0-5 are done. Move the "Known risks" list into the README if you want it.
 288. **[S]** **Trim `PRD.md`:** §4 Non-Goals (17 lines of "no X"; keep the 5 that guard scope: no AI, no overwrite, no Shorts, no playlists, no sponsor removal), §14 Open Questions (two are decided), §15 Future Versions (mark unscheduled or delete), §11/§13 (merge into 3 lines).
 289. **[S]** **`requirements.txt` has no version floor.** Use `yt-dlp>=2026.8` so a clean install isn't ancient. Don't pin exactly; you need updates.
@@ -392,6 +398,8 @@ Re-run today: the REPL ends on an unexpected error (`KeyError`) and on Ctrl-C mi
 294. **[S]** **Add a `LICENSE`** only if you plan to share (PRD: "clean enough to share later"). If you do share: README must say Wayland-only.
 
 ## Q. Security and privacy
+
+**Status: done (6 of 6), 2026-10-20.** Done in earlier sections: #295 (non-URL text cut to 60 characters in the log, toast and echo), #296 (absolute or `..` inbox rejected), #297 (control characters stripped before printing), #298 (only real links reach `.history`), #300 (`quote(..., safe="")`). Done now: #299 (`run.log` is created with mode 600; the existing file was chmod'ed).
 
 295. **[S]** **Truncate non-URL text** in the log, toast, and terminal echo to ~60 chars. A password pasted by mistake lands in `run.log` verbatim today (`log_run(url, ...)` in the parse-failure path).
 296. **[S]** **Reject `inbox` values that are absolute or contain `..`** (see Config). They write outside the vault.

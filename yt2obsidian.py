@@ -465,7 +465,7 @@ def log_run(url, outcome, err="", title="", secs=None, source=""):
     url, err, title = (re.sub(r"\s+", " ", str(x)).strip() for x in (url, err, title))
     secs = "" if secs is None else f"{secs:.1f}"
     try:
-        with open(LOG, "a", encoding="utf-8") as f:
+        with open(os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a", encoding="utf-8") as f:  # run.log is a watch history: owner only
             f.write(f"{datetime.now().isoformat(timespec='seconds')}\t{url}\t{outcome}\t{err}\t{title}\t{secs}\t{source}\n")
     except OSError:
         pass  # a full disk must not hide the run's real outcome
